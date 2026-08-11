@@ -81,7 +81,7 @@ primary="${base}-${digest}"
 
 # Staging directory for the snapshot/manifest under $RUNNER_TEMP.
 # Mode 0700; created at snapshot time. We only emit the path here.
-staging="${RUNNER_TEMP:-/tmp}/devenv-cache-action/${primary}"
+staging="${RUNNER_TEMP:-/tmp}/devenv-cache-action/${base}-${digest}"
 
 # Live DB lives in the working directory's .devenv/.
 live_db="$(pwd -P)/.devenv/nix-eval-cache.db"
