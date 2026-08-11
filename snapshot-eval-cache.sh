@@ -59,7 +59,7 @@ staged_db="${STAGING_DIR}/nix-eval-cache.db"
 if [ ! -f "${LIVE_DB}" ]; then
   tmp_manifest="$(mktemp)"
   cat > "$tmp_manifest" <<EOF
-{"schema":1,"manifestFormat":1,"key":"${EXPECTED_KEY}","devenvVersion":"${DEVENV_VERSION}","dbBytes":0,"dbSha256":"","note":"no-eval-db"}
+{"schema":1,"manifestFormat":1,"key":"${EXPECTED_KEY_BASE}","devenvVersion":"${DEVENV_VERSION}","dbBytes":0,"dbSha256":"","note":"no-eval-db"}
 EOF
   mv "$tmp_manifest" "${MANIFEST}"
   echo "devenv-cache-action: no live eval DB; recorded no-eval-db manifest" >&2
@@ -94,7 +94,7 @@ db_bytes="$(wc -c < "${staged_db}" | tr -d ' ')"
 # Atomically write the manifest (mktemp then mv).
 tmp_manifest="$(mktemp)"
 cat > "$tmp_manifest" <<EOF
-{"schema":1,"manifestFormat":1,"key":"${EXPECTED_KEY}","devenvVersion":"${DEVENV_VERSION}","dbBytes":${db_bytes},"dbSha256":"${db_sha}"}
+{"schema":1,"manifestFormat":1,"key":"${EXPECTED_KEY_BASE}","devenvVersion":"${DEVENV_VERSION}","dbBytes":${db_bytes},"dbSha256":"${db_sha}"}
 EOF
 mv "$tmp_manifest" "${MANIFEST}"
 

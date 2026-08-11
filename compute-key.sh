@@ -101,6 +101,7 @@ fi
 
 emit "devenv-version=${version}"
 emit "primary=${primary}"
+emit "key-base=${base}-${digest}"
 emit_multiline "restore" "${base}-${digest}-
 ${base}-"
 emit_multiline "paths" "${paths}"

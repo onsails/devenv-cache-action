@@ -137,7 +137,7 @@ runs:
         restore-keys: ${{ steps.key.outputs.restore }}
 
     - id: restore-eval
-      if: ${{ inputs.mode == 'restore' && steps.cache-restore.outputs.cache-hit == 'true' && inputs.cache-eval == 'true' }}
+      if: ${{ inputs.mode == 'restore' && inputs.cache-eval == 'true' }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -145,7 +145,7 @@ runs:
         MANIFEST: ${{ steps.key.outputs.manifest }}
         LIVE_DB: ${{ steps.key.outputs.live-db }}
         SQLITE3_PATH: ${{ steps.sqlite3.outputs.resolved }}
-        EXPECTED_KEY: ${{ steps.key.outputs.primary }}
+        EXPECTED_KEY: ${{ steps.key.outputs.key-base }}
         DEVENV_VERSION: ${{ steps.key.outputs.devenv-version }}
         CACHE_EVAL: ${{ inputs.cache-eval }}
         GITHUB_ACTION_PATH: ${{ env.GITHUB_ACTION_PATH }}
@@ -162,6 +162,7 @@ runs:
         MANIFEST: ${{ steps.key.outputs.manifest }}
         SQLITE3_PATH: ${{ steps.sqlite3.outputs.resolved }}
         EXPECTED_KEY: ${{ steps.key.outputs.primary }}
+        EXPECTED_KEY_BASE: ${{ steps.key.outputs.key-base }}
         DEVENV_VERSION: ${{ steps.key.outputs.devenv-version }}
         CACHE_EVAL: ${{ inputs.cache-eval }}
         GITHUB_ACTION_PATH: ${{ env.GITHUB_ACTION_PATH }}
