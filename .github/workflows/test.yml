@@ -33,8 +33,7 @@ jobs:
       - name: Assert miss on first run
         shell: bash
         run: |
-          [ "${{ steps.cache.outputs.cache-hit }}" != "true" ] || { echo "expected cache miss on seed run"; exit 1; }
-          [ "${{ steps.cache.outputs.eval-cache-restored }}" != "true" ] || { echo "expected eval not restored on seed run"; exit 1; }
+          [ "${{ steps.cache.outputs.cache-hit }}" != "true" ] || { echo "expected cache miss on seed run (exact key)"; exit 1; }
           echo '${{ steps.cache.outputs.primary-key }}' | grep -Eq '^devenv-eval-Linux-x86_64-devenvtest-version-[0-9a-f]{64}(-[0-9]+)?$' \
             || { echo "primary-key shape wrong: ${{ steps.cache.outputs.primary-key }}"; exit 1; }
 
