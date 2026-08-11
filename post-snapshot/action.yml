@@ -1,0 +1,44 @@
+name: post-snapshot
+description: >-
+  Private nested JavaScript action. Registers a success-gated post callback that snapshots the
+  live eval DB into the staging directory after job work completes and before the cache post-save
+  archives it. Not intended for direct use; consumers call the parent composite action.
+author: onsails
+
+inputs:
+  working-directory:
+    description: Directory holding devenv.nix / .devenv/.
+    required: true
+  snapshot-script:
+    description: Path to snapshot-eval-cache.sh in the parent action.
+    required: true
+  staging-dir:
+    description: Action-owned staging directory under RUNNER_TEMP.
+    required: true
+  live-db:
+    description: Path to the live eval DB.
+    required: true
+  manifest:
+    description: Path to the manifest JSON in the staging directory.
+    required: true
+  sqlite3-path:
+    description: Resolved sqlite3 executable.
+    required: true
+  primary-key:
+    description: Primary cache key.
+    required: true
+  key-base:
+    description: Base cache key (digest without suffix) for manifest validation.
+    required: true
+  devenv-version:
+    description: devenv version used in the key.
+    required: true
+  cache-eval:
+    description: "'true' if eval caching is enabled."
+    required: true
+
+runs:
+  using: node20
+  main: main.js
+  post: post.js
+  post-if: success()

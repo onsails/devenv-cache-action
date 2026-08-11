@@ -2,7 +2,7 @@
 
 Cache devenv's Nix evaluation so ephemeral CI runners skip a full re-evaluation.
 
-A Nix binary cache (Cachix, attic, `cache.nixos.org`) serves **built store paths**. It cannot serve
+A Nix binary cache (Cachix, attic, `cache.nixos.org`) serves **built store paths**. It cannot serve:
 **evaluation** — the work of resolving your flake inputs and computing the attribute set. Evaluation
 results live only in local files, so every fresh container-based, ephemeral, or self-hosted runner
 re-evaluates from scratch.
@@ -15,8 +15,10 @@ This action persists two things, as one cache entry:
 
 ## Usage
 
-Two calls per job: **restore** at the top (after checkout and Nix/binary-cache setup), **save** as the
-final successful step (after the last `devenv` invocation).
+One call per job, near the top (after checkout and Nix/binary-cache setup), before the first
+`devenv` invocation. The call restores the cache at action main and registers a success-gated
+post callback that snapshots the live eval DB after job completion — before the cache post-save
+archives it.
 
 ```yaml
 - uses: actions/checkout@v5
@@ -28,34 +30,38 @@ final successful step (after the last `devenv` invocation).
 
 - name: Restore devenv evaluation cache
   id: devenv-cache
-  uses: onsails/devenv-cache-action@<commit-sha> # v2.0.0
+  uses: onsails/devenv-cache-action@<commit-sha> # v2.1.0
   with:
-    mode: restore
+    key-suffix: ${{ github.run_id }}
 
 # ... all devenv work ...
-
-- name: Save devenv evaluation cache
-  if: ${{ success() }}
-  uses: onsails/devenv-cache-action@<commit-sha> # v2.0.0
-  with:
-    mode: save
-    key-suffix: ${{ github.run_id }}
 ```
 
 Pin to a 40-character commit SHA for production workflows.
 
-### Why two calls?
+### How the post-snapshot sequence works
 
-`actions/cache` registers its save as a **job post action** that runs after every step. A composite
-action cannot run a step after that (composite actions have no `post:` hook). So the snapshot — which
-must be taken *after* all devenv work — can never be sequenced before the archive while a single
-combined call owns the save. Splitting into explicit `mode: restore` + `mode: save` is the supported,
-deterministic shape.
+The action restores the cache immediately, then registers two post callbacks in order:
+
+1. The `actions/cache` step (combined restore + save) registers a success-gated post-save.
+2. A private nested JavaScript child (`$/post-snapshot`) registers a success-gated
+   post-snapshot finalizer.
+
+GitHub Actions runs post steps of referenced actions in **reverse registration order**, so the
+finalizer's post runs first — it creates the validated SQLite snapshot in the staging directory —
+then the cache post-save archives that directory. The snapshot therefore always exists before the
+archive is built. `key-suffix: ${{ github.run_id }}` rotates entries per run so a poisoned cache
+from a crashed job never sticks.
+
+The self-test workflow (`seed` → `reuse`) proves this ordering: the seed's only snapshot is
+produced by the finalizer post callback, and `reuse` asserts `eval-cache-restored=true` from it.
+If the finalizer did not run before the cache save, `reuse` would see a cache hit with no snapshot.
 
 ## Tool prerequisite
 
-The `sqlite3-path` executable must be available **outside** `devenv shell`. The save step runs after
-the workload and must not rely on `devenv` to evaluate itself just to snapshot. The resolution order:
+The `sqlite3-path` executable must be available **outside** `devenv shell`. The snapshot post
+callback runs after the workload and must not rely on `devenv` to evaluate itself just to
+snapshot. The resolution order:
 
 1. **PATH lookup** — `command -v sqlite3` (or the `sqlite3-path` input if set).
 2. **Nix fallback** — if `sqlite3` is not on PATH but `nix` is, the action creates a wrapper that
@@ -71,7 +77,6 @@ fallback works but adds a wrapper process.
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `mode` | _(required)_ | `restore` or `save`. Anything else is a hard error. |
 | `working-directory` | `.` | Directory holding `devenv.nix` / `.devenv/`. |
 | `hash-files` | `devenv.nix devenv.yaml devenv.lock` | Key inputs; zero matches is a hard error. |
 | `key-prefix` | `devenv-eval` | First key segment. |
@@ -109,7 +114,10 @@ symlinks into a store a fresh runner lacks. Only the single DB file crosses the 
 only as a SQLite online-backup snapshot.
 
 Removed in v2: `extra-paths` (it was exactly the footgun that caused this bug — it let callers hand
-live mutable state to the archiver) and the `save` boolean input (subsumed by `mode`).
+live mutable state to the archiver) and the `save` boolean input.
+
+Removed in v2.1: the `mode` input (`restore`/`save`). The single call now owns both restore and the
+success-gated snapshot+save sequence via the nested `$/post-snapshot` finalizer.
 
 ## Integrity gates and recovery
 
@@ -134,7 +142,7 @@ while the source is unchanged.
 - [SQLite online backup API](https://sqlite.org/backup.html)
 - [SQLite WAL semantics](https://sqlite.org/wal.html)
 - [SQLite `VACUUM INTO`](https://sqlite.org/lang_vacuum.html) (diagnostic fallback)
-- [`actions/cache/save`](https://github.com/actions/cache/tree/main/save)
+- [`actions/cache`](https://github.com/actions/cache)
 
 ## License
 

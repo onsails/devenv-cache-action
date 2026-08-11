@@ -20,11 +20,12 @@ jobs:
       - run: nix profile add nixpkgs#devenv
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
 
-      - name: Restore devenv eval cache (miss expected)
+      # One call: restores at main (miss expected on seed), registers a success-gated
+      # post-snapshot finalizer that runs before the cache post-save.
+      - name: devenv eval cache (miss expected, post-snapshot registers here)
         id: cache
         uses: ./
         with:
-          mode: restore
           working-directory: tests/fixture
           hash-files: devenv.nix
           devenv-version: test-version
@@ -37,7 +38,8 @@ jobs:
           echo '${{ steps.cache.outputs.primary-key }}' | grep -Eq '^devenv-eval-Linux-x86_64-devenvtest-version-[0-9a-f]{64}(-[0-9]+)?$' \
             || { echo "primary-key shape wrong: ${{ steps.cache.outputs.primary-key }}"; exit 1; }
 
-      # Seed the eval DB with a real evaluation.
+      # Seed the eval DB with a real evaluation. This runs AFTER the action main but BEFORE
+      # the post-snapshot finalizer callback, which snapshots this DB at job completion.
       - run: nix run nixpkgs#devenv -- shell -- true
         working-directory: tests/fixture
 
@@ -48,15 +50,10 @@ jobs:
           [ -f .devenv/nix-eval-cache.db ] || { echo "no .devenv/nix-eval-cache.db after devenv shell"; exit 1; }
           sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
 
-      - name: Save devenv eval cache
-        uses: ./
-        with:
-          mode: save
-          working-directory: tests/fixture
-          hash-files: devenv.nix
-          devenv-version: test-version
-          key-suffix: ${{ github.run_id }}
-
+  # reuse proves the post-snapshot finalizer created the seed snapshot before the cache post-save
+  # archived it: the only snapshot in the seed run is produced by the finalizer post callback, so a
+  # successful eval-cache-restored here is executable proof of finalizer-before-cache-save ordering.
+  # A log ordering assertion alone would not prove it.
   reuse:
     needs: seed
     runs-on: ubuntu-latest
@@ -76,7 +73,6 @@ jobs:
         id: cache
         uses: ./
         with:
-          mode: restore
           working-directory: tests/fixture
           hash-files: devenv.nix
           devenv-version: test-version
@@ -103,16 +99,6 @@ jobs:
           nix run nixpkgs#devenv -- shell -- true
           echo "devenv-shell-seconds=$((SECONDS - start))"
 
-      - name: Save devenv eval cache (already cached — save is a no-op)
-        if: ${{ success() }}
-        uses: ./
-        with:
-          mode: save
-          working-directory: tests/fixture
-          hash-files: devenv.nix
-          devenv-version: test-version
-          key-suffix: ${{ github.run_id }}
-
   negative:
     runs-on: ubuntu-latest
     steps:
@@ -132,7 +118,6 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          mode: restore
           hash-files: does-not-exist.nix
 
       - name: Check failure
@@ -145,7 +130,6 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          mode: restore
           working-directory: tests/fixture
           devenv-version: test-version
           hash-files: devenv.nix
