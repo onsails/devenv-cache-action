@@ -23,6 +23,7 @@ jobs:
         with:
           working-directory: tests/fixture
           devenv-version: test-version
+          key-suffix: ${{ github.run_id }}
       - name: Assert miss on first run
         shell: bash
         run: |
@@ -44,12 +45,12 @@ jobs:
         with:
           name: devenv
           skipPush: true
-      - run: nix profile add nixpkgs#devenv
       - id: cache
         uses: ./
         with:
           working-directory: tests/fixture
           devenv-version: test-version
+          key-suffix: ${{ github.run_id }}
       - name: Assert hit on reuse run
         shell: bash
         run: |
