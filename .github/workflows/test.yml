@@ -13,19 +13,21 @@ jobs:
       - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            extra-substituters = https://devenv.cachix.org
-            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAhbQFa9mNFQMERVMBWjFULms5+A=
-      - run: nix profile add github:cachix/devenv/v2.2.1 || nix profile install github:cachix/devenv/v2.2.1
+      - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
+        with:
+          name: devenv
+          skipPush: true
+      - run: nix profile add nixpkgs#devenv
       - id: cache
         uses: ./
         with:
           working-directory: tests/fixture
+          devenv-version: test-version
       - name: Assert miss on first run
         shell: bash
         run: |
           [ "${{ steps.cache.outputs.cache-hit }}" != "true" ] || { echo "expected cache miss on seed run"; exit 1; }
-          echo '${{ steps.cache.outputs.primary-key }}' | grep -Eq '^devenv-eval-Linux-x86_64-devenv2\.2\.1-[0-9a-f]{64}$' \
+          echo '${{ steps.cache.outputs.primary-key }}' | grep -Eq '^devenv-eval-Linux-x86_64-devenvtest-version-[0-9a-f]{64}$' \
             || { echo "primary-key shape wrong: ${{ steps.cache.outputs.primary-key }}"; exit 1; }
       - run: devenv shell -- true
         working-directory: tests/fixture
@@ -34,17 +36,20 @@ jobs:
     needs: seed
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            extra-substituters = https://devenv.cachix.org
-            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAhbQFa9mNFQMERVMBWjFULms5+A=
-      - run: nix profile add github:cachix/devenv/v2.2.1 || nix profile install github:cachix/devenv/v2.2.1
+      - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
+        with:
+          name: devenv
+          skipPush: true
+      - run: nix profile add nixpkgs#devenv
       - id: cache
         uses: ./
         with:
           working-directory: tests/fixture
+          devenv-version: test-version
       - name: Assert hit on reuse run
         shell: bash
         run: |
@@ -68,10 +73,11 @@ jobs:
       - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            extra-substituters = https://devenv.cachix.org
-            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAhbQFa9mNFQMERVMBWjFULms5+A=
-      - run: nix profile add github:cachix/devenv/v2.2.1 || nix profile install github:cachix/devenv/v2.2.1
+      - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
+        with:
+          name: devenv
+          skipPush: true
+      - run: nix profile add nixpkgs#devenv
       - id: cache
         continue-on-error: true
         uses: ./

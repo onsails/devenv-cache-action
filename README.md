@@ -12,7 +12,10 @@ re-evaluates from scratch. This action persists those local files across runs.
 ```yaml
 - uses: actions/checkout@v5
 - uses: cachix/install-nix-action@v31
-- run: nix profile add github:cachix/devenv/v2.2.1 || nix profile install github:cachix/devenv/v2.2.1
+- uses: cachix/cachix-action@v16
+  with:
+    name: devenv
+- run: nix profile add nixpkgs#devenv
 - uses: onsails/devenv-cache-action@v1
 - run: devenv shell -- your-command
 ```
