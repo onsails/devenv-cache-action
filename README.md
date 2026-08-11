@@ -54,10 +54,18 @@ deterministic shape.
 
 ## Tool prerequisite
 
-The `sqlite3-path` executable must be on PATH **outside** `devenv shell`. The save step runs after
-the workload and must not rely on `devenv` to evaluate itself just to snapshot. Absence is a **hard
-error**: a silent downgrade hides the performance/reliability state. On Ubuntu runners, install
-`sqlite3` in your image or add `apt-get install -y sqlite3` to setup.
+The `sqlite3-path` executable must be available **outside** `devenv shell`. The save step runs after
+the workload and must not rely on `devenv` to evaluate itself just to snapshot. The resolution order:
+
+1. **PATH lookup** — `command -v sqlite3` (or the `sqlite3-path` input if set).
+2. **Nix fallback** — if `sqlite3` is not on PATH but `nix` is, the action creates a wrapper that
+   runs `nix run nixpkgs#sqlite-interactive`. This makes it work on GitHub-hosted runners that have
+   Nix (via `install-nix-action`) but no system `sqlite3`.
+3. **Hard error** — if neither succeeds, the action fails. A silent downgrade hides the
+   performance/reliability state.
+
+On self-hosted images, install `sqlite3` directly (`apt-get install -y sqlite3`) for speed; the nix
+fallback works but adds a wrapper process.
 
 ## Inputs
 
