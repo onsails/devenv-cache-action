@@ -26,6 +26,7 @@ jobs:
         with:
           mode: restore
           working-directory: tests/fixture
+          hash-files: devenv.nix
           devenv-version: test-version
           key-suffix: ${{ github.run_id }}
 
@@ -53,6 +54,7 @@ jobs:
         with:
           mode: save
           working-directory: tests/fixture
+          hash-files: devenv.nix
           devenv-version: test-version
           key-suffix: ${{ github.run_id }}
 
@@ -77,6 +79,7 @@ jobs:
         with:
           mode: restore
           working-directory: tests/fixture
+          hash-files: devenv.nix
           devenv-version: test-version
           key-suffix: ${{ github.run_id }}
 
@@ -107,6 +110,7 @@ jobs:
         with:
           mode: save
           working-directory: tests/fixture
+          hash-files: devenv.nix
           devenv-version: test-version
           key-suffix: ${{ github.run_id }}
 
