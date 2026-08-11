@@ -31,8 +31,8 @@ inputs:
     default: devenv-eval
   key-suffix:
     description: >-
-      Optional final key segment. Set to ${{ github.run_id }} to rotate the entry every run when a
-      previously saved cache may be incomplete.
+      Optional final key segment. Set to the run id (github.run_id) to rotate the entry every run
+      when a previously saved cache may be incomplete.
     required: false
     default: ''
   devenv-version:
