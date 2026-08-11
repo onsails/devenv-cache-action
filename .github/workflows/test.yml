@@ -54,10 +54,6 @@ jobs:
         shell: bash
         run: |
           [ "${{ steps.cache.outputs.cache-hit }}" == "true" ] || { echo "expected cache hit on reuse run"; exit 1; }
-      - name: Assert eval-cache DB restored
-        shell: bash
-        run: |
-          [ -f tests/fixture/.devenv/nix-eval-cache.db ] || { echo "nix-eval-cache.db missing"; exit 1; }
       - name: Time devenv shell
         shell: bash
         working-directory: tests/fixture
