@@ -18,20 +18,45 @@ jobs:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
-      - id: cache
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+
+      - name: Restore devenv eval cache (miss expected)
+        id: cache
         uses: ./
         with:
+          mode: restore
           working-directory: tests/fixture
+          hash-files: devenv.nix
           devenv-version: test-version
           key-suffix: ${{ github.run_id }}
+
       - name: Assert miss on first run
         shell: bash
         run: |
           [ "${{ steps.cache.outputs.cache-hit }}" != "true" ] || { echo "expected cache miss on seed run"; exit 1; }
+          [ "${{ steps.cache.outputs.eval-cache-restored }}" != "true" ] || { echo "expected eval not restored on seed run"; exit 1; }
           echo '${{ steps.cache.outputs.primary-key }}' | grep -Eq '^devenv-eval-Linux-x86_64-devenvtest-version-[0-9a-f]{64}(-[0-9]+)?$' \
             || { echo "primary-key shape wrong: ${{ steps.cache.outputs.primary-key }}"; exit 1; }
+
+      # Seed the eval DB with a real evaluation.
       - run: nix run nixpkgs#devenv -- shell -- true
         working-directory: tests/fixture
+
+      - name: Assert live DB exists after devenv shell
+        shell: bash
+        working-directory: tests/fixture
+        run: |
+          [ -f .devenv/nix-eval-cache.db ] || { echo "no .devenv/nix-eval-cache.db after devenv shell"; exit 1; }
+          sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
+
+      - name: Save devenv eval cache
+        uses: ./
+        with:
+          mode: save
+          working-directory: tests/fixture
+          hash-files: devenv.nix
+          devenv-version: test-version
+          key-suffix: ${{ github.run_id }}
 
   reuse:
     needs: seed
@@ -45,17 +70,33 @@ jobs:
         with:
           name: devenv
           skipPush: true
-      - id: cache
+      - run: nix profile add nixpkgs#devenv
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+
+      - name: Restore devenv eval cache (hit expected)
+        id: cache
         uses: ./
         with:
+          mode: restore
           working-directory: tests/fixture
+          hash-files: devenv.nix
           devenv-version: test-version
           key-suffix: ${{ github.run_id }}
-      - name: Assert hit on reuse run
+
+      - name: Assert exact hit and eval restored
         shell: bash
         run: |
           [ "${{ steps.cache.outputs.cache-hit }}" == "true" ] || { echo "expected cache hit on reuse run"; exit 1; }
-      - name: Time devenv shell
+          [ "${{ steps.cache.outputs.eval-cache-restored }}" == "true" ] || { echo "expected eval-cache-restored=true"; exit 1; }
+
+      - name: Assert installed DB integrity
+        shell: bash
+        working-directory: tests/fixture
+        run: |
+          [ -f .devenv/nix-eval-cache.db ] || { echo "no installed DB"; exit 1; }
+          sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
+
+      - name: Time devenv shell (reuses restored eval cache)
         shell: bash
         working-directory: tests/fixture
         run: |
@@ -63,7 +104,17 @@ jobs:
           nix run nixpkgs#devenv -- shell -- true
           echo "devenv-shell-seconds=$((SECONDS - start))"
 
-  inputs:
+      - name: Save devenv eval cache (already cached — save is a no-op)
+        if: ${{ success() }}
+        uses: ./
+        with:
+          mode: save
+          working-directory: tests/fixture
+          hash-files: devenv.nix
+          devenv-version: test-version
+          key-suffix: ${{ github.run_id }}
+
+  negative:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -75,12 +126,32 @@ jobs:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
-      - id: cache
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+
+      - name: Assert zero-match hard error
+        id: cache
         continue-on-error: true
         uses: ./
         with:
+          mode: restore
           hash-files: does-not-exist.nix
-      - name: Assert zero-match hard error
+
+      - name: Check failure
         shell: bash
         run: |
           [ "${{ steps.cache.outcome }}" == "failure" ] || { echo "expected failure on zero hash-files match"; exit 1; }
+
+      - name: Assert missing sqlite3 is a hard error (cache-eval)
+        id: nosqlite
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: restore
+          working-directory: tests/fixture
+          devenv-version: test-version
+          sqlite3-path: /no/such/sqlite3
+
+      - name: Check missing-sqlite3 failure
+        shell: bash
+        run: |
+          [ "${{ steps.nosqlite.outcome }}" == "failure" ] || { echo "expected failure when sqlite3 missing and cache-eval on"; exit 1; }
