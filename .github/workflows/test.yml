@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           [ "${{ steps.cache.outputs.cache-hit }}" != "true" ] || { echo "expected cache miss on seed run"; exit 1; }
-          echo '${{ steps.cache.outputs.primary-key }}' | grep -Eq '^devenv-eval-Linux-x86_64-devenvtest-version-[0-9a-f]{64}$' \
+          echo '${{ steps.cache.outputs.primary-key }}' | grep -Eq '^devenv-eval-Linux-x86_64-devenvtest-version-[0-9a-f]{64}(-[0-9]+)?$' \
             || { echo "primary-key shape wrong: ${{ steps.cache.outputs.primary-key }}"; exit 1; }
       - run: devenv shell -- true
         working-directory: tests/fixture
