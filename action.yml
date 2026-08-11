@@ -88,7 +88,7 @@ runs:
         CACHE_EVAL: ${{ inputs.cache-eval }}
       run: $GITHUB_ACTION_PATH/compute-key.sh
 
-    # --- resolve sqlite3 once; reject missing/non-executable when cache-eval is on ---
+    # --- resolve sqlite3: prefer PATH, fall back to nix run, else fail ---
     - id: sqlite3
       shell: bash
       env:
@@ -97,14 +97,32 @@ runs:
       run: |
         set -euo pipefail
         resolved=""
+        # 1. Direct path or command -v
         if [ -n "${SQLITE3_INPUT}" ] && [ -x "${SQLITE3_INPUT}" ]; then
           resolved="${SQLITE3_INPUT}"
         else
           resolved="$(command -v "${SQLITE3_INPUT}" 2>/dev/null || true)"
           if [ -n "$resolved" ] && [ ! -x "$resolved" ]; then resolved=""; fi
         fi
+        # 2. Fall back to nix run wrapper (works on any runner with nix installed)
         if [ "${CACHE_EVAL}" = "true" ] && [ -z "$resolved" ]; then
-          echo "devenv-cache-action: sqlite3 '${SQLITE3_INPUT}' not found or not executable (cache-eval requires it)" >&2
+          if command -v nix >/dev/null 2>&1; then
+            wrapper="$RUNNER_TEMP/devenv-cache-sqlite3-wrapper.sh"
+            mkdir -p "$RUNNER_TEMP"
+            printf '#!/usr/bin/env bash\nexec nix run nixpkgs#sqlite-interactive -- "$@"\n' > "$wrapper"
+            chmod +x "$wrapper"
+            # Verify it actually works
+            if "$wrapper" --version >/dev/null 2>&1; then
+              resolved="$wrapper"
+              echo "devenv-cache-action: sqlite3 not on PATH; using nix run nixpkgs#sqlite-interactive" >&2
+            else
+              echo "devenv-cache-action: nix found but 'nix run nixpkgs#sqlite-interactive' failed" >&2
+            fi
+          fi
+        fi
+        # 3. Hard fail only if both failed
+        if [ "${CACHE_EVAL}" = "true" ] && [ -z "$resolved" ]; then
+          echo "devenv-cache-action: sqlite3 not found on PATH and nix run fallback failed. Install sqlite3 or set sqlite3-path." >&2
           exit 1
         fi
         printf 'resolved=%s\n' "${resolved:-}" >> "$GITHUB_OUTPUT"
