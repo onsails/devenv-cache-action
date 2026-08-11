@@ -1,0 +1,75 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - run: nix profile add github:cachix/devenv/v2.2.1 || nix profile install github:cachix/devenv/v2.2.1
+      - id: cache
+        uses: ./
+        with:
+          working-directory: tests/fixture
+      - name: Assert miss on first run
+        shell: bash
+        run: |
+          [ "${{ steps.cache.outputs.cache-hit }}" != "true" ] || { echo "expected cache miss on seed run"; exit 1; }
+          echo '${{ steps.cache.outputs.primary-key }}' | grep -Eq '^devenv-eval-Linux-x86_64-devenv2\.2\.1-[0-9a-f]{64}$' \
+            || { echo "primary-key shape wrong: ${{ steps.cache.outputs.primary-key }}"; exit 1; }
+      - run: devenv shell -- true
+        working-directory: tests/fixture
+
+  reuse:
+    needs: seed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - run: nix profile add github:cachix/devenv/v2.2.1 || nix profile install github:cachix/devenv/v2.2.1
+      - id: cache
+        uses: ./
+        with:
+          working-directory: tests/fixture
+      - name: Assert hit on reuse run
+        shell: bash
+        run: |
+          [ "${{ steps.cache.outputs.cache-hit }}" == "true" ] || { echo "expected cache hit on reuse run"; exit 1; }
+      - name: Assert eval-cache DB restored
+        shell: bash
+        run: |
+          [ -f tests/fixture/.devenv/nix-eval-cache.db ] || { echo "nix-eval-cache.db missing"; exit 1; }
+      - name: Time devenv shell
+        shell: bash
+        working-directory: tests/fixture
+        run: |
+          start=$SECONDS
+          devenv shell -- true
+          echo "devenv shell seconds: $((SECONDS - start))"
+
+  inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - run: nix profile add github:cachix/devenv/v2.2.1 || nix profile install github:cachix/devenv/v2.2.1
+      - id: cache
+        continue-on-error: true
+        uses: ./
+        with:
+          hash-files: does-not-exist.nix
+      - name: Assert zero-match hard error
+        shell: bash
+        run: |
+          [ "${{ steps.cache.outcome }}" == "failure" ] || { echo "expected failure on zero hash-files match"; exit 1; }

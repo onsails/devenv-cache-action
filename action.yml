@@ -1,0 +1,78 @@
+name: devenv cache
+description: Cache devenv's Nix evaluation so ephemeral CI runners skip full re-evaluation.
+author: onsails
+branding:
+  icon: zap
+  color: purple
+
+inputs:
+  working-directory:
+    description: Directory containing devenv.nix.
+    required: false
+    default: .
+  hash-files:
+    description: >-
+      Newline-separated files whose contents key the cache. Missing files are skipped; at least one
+      must exist.
+    required: false
+    default: |
+      devenv.nix
+      devenv.yaml
+      devenv.lock
+  extra-paths:
+    description: >-
+      Newline-separated extra paths to cache, appended to the defaults. Paths are relative to
+      working-directory unless absolute or ~-prefixed.
+    required: false
+    default: ''
+  key-prefix:
+    description: First segment of the cache key.
+    required: false
+    default: devenv-eval
+  key-suffix:
+    description: >-
+      Optional final key segment. Set to ${{ github.run_id }} to rotate the entry every run when a
+      previously saved cache may be incomplete.
+    required: false
+    default: ''
+  devenv-version:
+    description: Override the detected devenv version used in the cache key.
+    required: false
+    default: ''
+  save:
+    description: Set to 'false' to restore only and never save.
+    required: false
+    default: 'true'
+
+outputs:
+  cache-hit:
+    description: "'true' when the primary key matched exactly."
+    value: ${{ steps.cache.outputs.cache-hit }}
+  primary-key:
+    description: The computed primary cache key.
+    value: ${{ steps.key.outputs.primary }}
+  devenv-version:
+    description: The devenv version used in the key.
+    value: ${{ steps.key.outputs.devenv-version }}
+
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        HASH_FILES: ${{ inputs.hash-files }}
+        DEVENV_VERSION_INPUT: ${{ inputs.devenv-version }}
+        KEY_PREFIX: ${{ inputs.key-prefix }}
+        KEY_SUFFIX: ${{ inputs.key-suffix }}
+        EXTRA_PATHS: ${{ inputs.extra-paths }}
+      run: $GITHUB_ACTION_PATH/compute-key.sh
+
+    - id: cache
+      uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      with:
+        path: ${{ steps.key.outputs.paths }}
+        key: ${{ steps.key.outputs.primary }}
+        restore-keys: ${{ steps.key.outputs.restore }}
+        lookup-only: ${{ inputs.save == 'false' }}
