@@ -1,37 +1,39 @@
 name: devenv cache
-description: Cache devenv's Nix evaluation files (~/.cache/nix) so ephemeral CI runners skip full re-evaluation.
+description: >-
+  Cache devenv's Nix evaluation state (~/.cache/nix plus a validated SQLite snapshot of the
+  nix-eval-cache.db) so ephemeral CI runners skip full re-evaluation. Restore at job start,
+  save as the final successful step.
 author: onsails
 branding:
   icon: zap
   color: purple
 
 inputs:
+  mode:
+    description: >-
+      `restore` or `save`. Anything else is a hard error. Use `restore` at the top of the job
+      and `save` as the final step (gated on `if: success()`).
+    required: true
   working-directory:
-    description: Directory containing devenv.nix.
+    description: Directory containing devenv.nix / .devenv/.
     required: false
     default: .
   hash-files:
     description: >-
-      Newline-separated files whose contents key the cache. Missing files are skipped; at least one
-      must exist.
+      Newline-separated files whose contents key the cache. Missing files are skipped; at
+      least one must exist or the action fails.
     required: false
     default: |
       devenv.nix
       devenv.yaml
       devenv.lock
-  extra-paths:
-    description: >-
-      Newline-separated extra paths to cache, appended to the defaults. Paths are relative to
-      working-directory unless absolute or ~-prefixed.
-    required: false
-    default: ''
   key-prefix:
     description: First segment of the cache key.
     required: false
     default: devenv-eval
   key-suffix:
     description: >-
-      Optional final key segment. Set to the run id (github.run_id) to rotate the entry every run
+      Optional final key segment. Set to `${{ github.run_id }}` to rotate the entry every run
       when a previously saved cache may be incomplete.
     required: false
     default: ''
@@ -39,25 +41,42 @@ inputs:
     description: Override the detected devenv version used in the cache key.
     required: false
     default: ''
-  save:
-    description: Set to 'false' to restore only and never save.
+  cache-nix:
+    description: Include ~/.cache/nix in the cache entry.
     required: false
     default: 'true'
+  cache-eval:
+    description: Include the validated eval-DB snapshot in the cache entry.
+    required: false
+    default: 'true'
+  sqlite3-path:
+    description: >-
+      Executable used for the snapshot and integrity validation. Must resolve on PATH outside
+      devenv shell. Absence is a hard error.
+    required: false
+    default: sqlite3
 
 outputs:
   cache-hit:
     description: "'true' when the primary key matched exactly."
-    value: ${{ steps.cache.outputs.cache-hit }}
+    value: ${{ steps.cache-restore.outputs.cache-hit }}
   primary-key:
     description: The computed primary cache key.
     value: ${{ steps.key.outputs.primary }}
   devenv-version:
     description: The devenv version used in the key.
     value: ${{ steps.key.outputs.devenv-version }}
+  eval-cache-restored:
+    description: "'true' when a validated eval-DB snapshot was installed."
+    value: ${{ steps.restore-eval.outputs.eval-cache-restored }}
+  eval-db-path:
+    description: Path to the installed live eval DB, when restored.
+    value: ${{ steps.restore-eval.outputs.eval-db-path }}
 
 runs:
   using: composite
   steps:
+    # --- shared key computation (both modes) ---
     - id: key
       shell: bash
       working-directory: ${{ inputs.working-directory }}
@@ -66,13 +85,73 @@ runs:
         DEVENV_VERSION_INPUT: ${{ inputs.devenv-version }}
         KEY_PREFIX: ${{ inputs.key-prefix }}
         KEY_SUFFIX: ${{ inputs.key-suffix }}
-        EXTRA_PATHS: ${{ inputs.extra-paths }}
+        CACHE_EVAL: ${{ inputs.cache-eval }}
       run: $GITHUB_ACTION_PATH/compute-key.sh
 
-    - id: cache
-      uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+    # --- resolve sqlite3 once; reject missing/non-executable when cache-eval is on ---
+    - id: sqlite3
+      shell: bash
+      env:
+        SQLITE3_INPUT: ${{ inputs.sqlite3-path }}
+        CACHE_EVAL: ${{ inputs.cache-eval }}
+      run: |
+        set -euo pipefail
+        resolved=""
+        if [ -n "${SQLITE3_INPUT}" ] && [ -x "${SQLITE3_INPUT}" ]; then
+          resolved="${SQLITE3_INPUT}"
+        else
+          resolved="$(command -v "${SQLITE3_INPUT}" 2>/dev/null || true)"
+          if [ -n "$resolved" ] && [ ! -x "$resolved" ]; then resolved=""; fi
+        fi
+        if [ "${CACHE_EVAL}" = "true" ] && [ -z "$resolved" ]; then
+          echo "devenv-cache-action: sqlite3 '${SQLITE3_INPUT}' not found or not executable (cache-eval requires it)" >&2
+          exit 1
+        fi
+        printf 'resolved=%s\n' "${resolved:-}" >> "$GITHUB_OUTPUT"
+
+    # --- mode: restore ---
+    - id: cache-restore
+      if: ${{ inputs.mode == 'restore' }}
+      uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
       with:
         path: ${{ steps.key.outputs.paths }}
         key: ${{ steps.key.outputs.primary }}
         restore-keys: ${{ steps.key.outputs.restore }}
-        lookup-only: ${{ inputs.save == 'false' }}
+
+    - id: restore-eval
+      if: ${{ inputs.mode == 'restore' && steps.cache-restore.outputs.cache-hit == 'true' && inputs.cache-eval == 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        STAGING_DIR: ${{ steps.key.outputs.staging-dir }}
+        MANIFEST: ${{ steps.key.outputs.manifest }}
+        LIVE_DB: ${{ steps.key.outputs.live-db }}
+        SQLITE3_PATH: ${{ steps.sqlite3.outputs.resolved }}
+        EXPECTED_KEY: ${{ steps.key.outputs.primary }}
+        DEVENV_VERSION: ${{ steps.key.outputs.devenv-version }}
+        CACHE_EVAL: ${{ inputs.cache-eval }}
+        GITHUB_ACTION_PATH: ${{ env.GITHUB_ACTION_PATH }}
+      run: $GITHUB_ACTION_PATH/restore-eval-cache.sh
+
+    # --- mode: save ---
+    - id: snapshot-eval
+      if: ${{ inputs.mode == 'save' && inputs.cache-eval == 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        STAGING_DIR: ${{ steps.key.outputs.staging-dir }}
+        LIVE_DB: ${{ steps.key.outputs.live-db }}
+        MANIFEST: ${{ steps.key.outputs.manifest }}
+        SQLITE3_PATH: ${{ steps.sqlite3.outputs.resolved }}
+        EXPECTED_KEY: ${{ steps.key.outputs.primary }}
+        DEVENV_VERSION: ${{ steps.key.outputs.devenv-version }}
+        CACHE_EVAL: ${{ inputs.cache-eval }}
+        GITHUB_ACTION_PATH: ${{ env.GITHUB_ACTION_PATH }}
+      run: $GITHUB_ACTION_PATH/snapshot-eval-cache.sh
+
+    - id: cache-save
+      if: ${{ inputs.mode == 'save' }}
+      uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      with:
+        path: ${{ steps.key.outputs.paths }}
+        key: ${{ steps.key.outputs.primary }}
