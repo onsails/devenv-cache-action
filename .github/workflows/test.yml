@@ -141,7 +141,7 @@ jobs:
         run: |
           [ "${{ steps.cache.outcome }}" == "failure" ] || { echo "expected failure on zero hash-files match"; exit 1; }
 
-      - name: Assert missing sqlite3 is a hard error (cache-eval)
+      - name: Assert sqlite3 fallback via nix when not on PATH
         id: nosqlite
         continue-on-error: true
         uses: ./
@@ -149,9 +149,10 @@ jobs:
           mode: restore
           working-directory: tests/fixture
           devenv-version: test-version
+          hash-files: devenv.nix
           sqlite3-path: /no/such/sqlite3
 
-      - name: Check missing-sqlite3 failure
+      - name: Check nix fallback succeeded
         shell: bash
         run: |
-          [ "${{ steps.nosqlite.outcome }}" == "failure" ] || { echo "expected failure when sqlite3 missing and cache-eval on"; exit 1; }
+          [ "${{ steps.nosqlite.outcome }}" == "success" ] || { echo "expected nix run fallback to resolve sqlite3"; exit 1; }
