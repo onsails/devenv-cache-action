@@ -5,7 +5,8 @@ Cache devenv's Nix evaluation so ephemeral CI runners skip a full re-evaluation.
 A Nix binary cache (Cachix, attic, `cache.nixos.org`) serves **built store paths**. It cannot serve
 **evaluation** — the work of resolving your flake inputs and computing the attribute set. Evaluation
 results live only in local files, so every fresh container-based, ephemeral, or self-hosted runner
-re-evaluates from scratch. This action persists those local files across runs.
+re-evaluates from scratch. This action persists `~/.cache/nix` (Nix's own flake/eval/fetcher caches)
+across runs. Use `extra-paths` to cache additional devenv state if your setup is safe with it.
 
 ## Usage
 

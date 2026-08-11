@@ -59,8 +59,11 @@ home_cache="$HOME/.cache/nix"
 [ -d "$home_cache" ] || mkdir -p "$home_cache"
 add_path "$home_cache"
 
-eval_db="$(pwd)/.devenv/nix-eval-cache.db"
-add_path "$eval_db"
+# NOTE: .devenv/nix-eval-cache.db is deliberately NOT cached by default.
+# actions/cache tarballs files as-is; a SQLite DB written under WAL mode or
+# by a process that died mid-evaluation is restored malformed, and devenv
+# crashes hard (error code 11) instead of falling back to full evaluation.
+# Consumers who want to risk it can opt in via extra-paths.
 
 # Append caller-provided extra paths, resolving them against the working directory.
 while IFS= read -r ep; do

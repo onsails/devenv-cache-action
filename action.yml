@@ -1,5 +1,5 @@
 name: devenv cache
-description: Cache devenv's Nix evaluation so ephemeral CI runners skip full re-evaluation.
+description: Cache devenv's Nix evaluation files (~/.cache/nix) so ephemeral CI runners skip full re-evaluation.
 author: onsails
 branding:
   icon: zap
