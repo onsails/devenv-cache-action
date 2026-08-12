@@ -177,6 +177,185 @@ jobs:
           nix run nixpkgs#devenv -- shell -- true
           echo "devenv-shell-seconds=$((SECONDS - start))"
 
+
+  # Timing control: snapshot-only restoration. This chain intentionally excludes the bounded
+  # Nix fingerprint cache while otherwise running the same real devenv command as its peer.
+  compare-snapshot-seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
+        with:
+          name: devenv
+          skipPush: true
+      - run: nix profile add nixpkgs#devenv
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      - name: Initialize snapshot-only comparison cache
+        id: cache
+        uses: ./
+        with:
+          working-directory: tests/fixture
+          hash-files: devenv.nix
+          key-prefix: comparison-snapshot
+          key-suffix: ${{ github.run_id }}
+          devenv-version: test-version
+          cache-eval: true
+          cache-nix: false
+          cache-nix-eval: false
+      - name: Clear comparison state before real evaluation
+        shell: bash
+        working-directory: tests/fixture
+        run: |
+          rm -rf .devenv "$HOME/.cache/nix/eval-cache-v6"
+      - name: Seed snapshot-only comparison with real devenv shell
+        working-directory: tests/fixture
+        run: nix run nixpkgs#devenv -- shell -- true
+      - name: Assert snapshot-only seed outputs and eval DB
+        shell: bash
+        working-directory: tests/fixture
+        run: |
+          [ "${{ steps.cache.outputs.cache-hit }}" != "true" ] || { echo "expected cache miss on snapshot-only seed"; exit 1; }
+          [ -f .devenv/nix-eval-cache.db ] || { echo "snapshot-only seed did not create eval DB"; exit 1; }
+          sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
+
+  compare-snapshot-warm:
+    needs: compare-snapshot-seed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
+        with:
+          name: devenv
+          skipPush: true
+      - run: nix profile add nixpkgs#devenv
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      - name: Restore snapshot-only comparison cache
+        id: cache
+        uses: ./
+        with:
+          working-directory: tests/fixture
+          hash-files: devenv.nix
+          key-prefix: comparison-snapshot
+          key-suffix: ${{ github.run_id }}
+          devenv-version: test-version
+          cache-eval: true
+          cache-nix: false
+          cache-nix-eval: false
+      - name: Assert exact snapshot-only hit and outputs
+        shell: bash
+        run: |
+          [ "${{ steps.cache.outputs.cache-hit }}" = "true" ] || { echo "expected exact cache hit on snapshot-only warm"; exit 1; }
+          [ "${{ steps.cache.outputs.eval-cache-restored }}" = "true" ] || { echo "expected eval-cache-restored=true on snapshot-only warm"; exit 1; }
+          [ "${{ steps.cache.outputs.nix-eval-cache-restored }}" = "false" ] || { echo "expected nix-eval-cache-restored=false on snapshot-only warm"; exit 1; }
+      - name: Assert snapshot-only eval DB integrity
+        shell: bash
+        working-directory: tests/fixture
+        run: sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
+      - name: Time snapshot-only real devenv shell
+        shell: bash
+        working-directory: tests/fixture
+        run: |
+          start=$SECONDS
+          nix run nixpkgs#devenv -- shell -- true
+          echo "comparison=snapshot-only devenv-shell-seconds=$((SECONDS - start))"
+
+  # Timing treatment: restore the same devenv snapshot plus bounded, validated Nix fingerprint DBs.
+  compare-nix-eval-seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
+        with:
+          name: devenv
+          skipPush: true
+      - run: nix profile add nixpkgs#devenv
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      - name: Initialize bounded-Nix-eval comparison cache
+        id: cache
+        uses: ./
+        with:
+          working-directory: tests/fixture
+          hash-files: devenv.nix
+          key-prefix: comparison-nix-eval
+          key-suffix: ${{ github.run_id }}
+          devenv-version: test-version
+          cache-eval: true
+          cache-nix: false
+          cache-nix-eval: true
+      - name: Clear comparison state before real evaluation
+        shell: bash
+        working-directory: tests/fixture
+        run: |
+          rm -rf .devenv "$HOME/.cache/nix/eval-cache-v6"
+      - name: Seed bounded-Nix-eval comparison with real devenv shell
+        working-directory: tests/fixture
+        run: nix run nixpkgs#devenv -- shell -- true
+      - name: Assert bounded-Nix-eval seed outputs and genuine DB
+        shell: bash
+        working-directory: tests/fixture
+        run: |
+          [ "${{ steps.cache.outputs.cache-hit }}" != "true" ] || { echo "expected cache miss on bounded-Nix-eval seed"; exit 1; }
+          [ -f .devenv/nix-eval-cache.db ] || { echo "bounded-Nix-eval seed did not create eval DB"; exit 1; }
+          sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
+          genuine_nix_db="$(find "$HOME/.cache/nix/eval-cache-v6" -maxdepth 1 -type f -name '*.sqlite' -print -quit 2>/dev/null || true)"
+          [ -n "$genuine_nix_db" ] || { echo "real devenv shell did not create a Nix fingerprint DB"; exit 1; }
+          sqlite3 "$genuine_nix_db" 'PRAGMA quick_check;' | grep -qx ok
+
+  compare-nix-eval-warm:
+    needs: compare-nix-eval-seed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
+        with:
+          name: devenv
+          skipPush: true
+      - run: nix profile add nixpkgs#devenv
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      - name: Restore bounded-Nix-eval comparison cache
+        id: cache
+        uses: ./
+        with:
+          working-directory: tests/fixture
+          hash-files: devenv.nix
+          key-prefix: comparison-nix-eval
+          key-suffix: ${{ github.run_id }}
+          devenv-version: test-version
+          cache-eval: true
+          cache-nix: false
+          cache-nix-eval: true
+      - name: Assert exact bounded-Nix-eval hit and outputs
+        shell: bash
+        run: |
+          [ "${{ steps.cache.outputs.cache-hit }}" = "true" ] || { echo "expected exact cache hit on bounded-Nix-eval warm"; exit 1; }
+          [ "${{ steps.cache.outputs.eval-cache-restored }}" = "true" ] || { echo "expected eval-cache-restored=true on bounded-Nix-eval warm"; exit 1; }
+          [ "${{ steps.cache.outputs.nix-eval-cache-restored }}" = "true" ] || { echo "expected nix-eval-cache-restored=true on bounded-Nix-eval warm"; exit 1; }
+          test "${{ steps.cache.outputs.nix-eval-files-restored }}" -ge 1 || { echo "expected a restored Nix eval-cache DB on bounded-Nix-eval warm"; exit 1; }
+      - name: Assert bounded-Nix-eval restored DB integrity
+        shell: bash
+        working-directory: tests/fixture
+        run: |
+          sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
+          find "$HOME/.cache/nix/eval-cache-v6" -maxdepth 1 -type f -name '*.sqlite' -print -quit | grep -q .
+      - name: Time bounded-Nix-eval real devenv shell
+        shell: bash
+        working-directory: tests/fixture
+        run: |
+          start=$SECONDS
+          nix run nixpkgs#devenv -- shell -- true
+          echo "comparison=snapshot-plus-bounded-nix-eval devenv-shell-seconds=$((SECONDS - start))"
   negative:
     runs-on: ubuntu-latest
     steps:
