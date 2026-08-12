@@ -102,7 +102,8 @@ if ! (
     [ "${nix_total}" -le $((MAX_NIX_EVAL_BYTES - bytes)) ] || exit 1
     nix_total=$((nix_total + bytes))
     printf 'N\t%s\t%s\t%s\n' "${name}" "${sha}" "${bytes}"
-    [ -n "${comma}" ] && [ -n "${nix_entries}" ] || [ -z "${comma}" ] && [ -z "${nix_entries}" ] || exit 1
+    # After a comma, more entries must follow; after the last entry, no comma and no remaining entries.
+    if [ -n "${comma}" ]; then [ -n "${nix_entries}" ] || exit 1; else [ -z "${nix_entries}" ] || exit 1; fi
   done
 ) >"${parsed}"; then
   echo 'devenv-cache-action: invalid snapshot manifest v2; treating cache as a miss' >&2
