@@ -36,6 +36,9 @@ inputs:
   cache-eval:
     description: "'true' if eval caching is enabled."
     required: true
+  cache-nix-eval:
+    description: "'true' if bounded Nix eval-cache-v6 snapshots are enabled."
+    required: true
 
 runs:
   using: node20

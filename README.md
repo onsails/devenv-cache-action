@@ -7,11 +7,15 @@ A Nix binary cache (Cachix, attic, `cache.nixos.org`) serves **built store paths
 results live only in local files, so every fresh container-based, ephemeral, or self-hosted runner
 re-evaluates from scratch.
 
-This action persists two things, as one cache entry:
+This action can persist two independently enabled cache classes, in one cache entry:
 
-1. `~/.cache/nix` — Nix's own flake/eval/fetcher caches.
-2. A **validated SQLite snapshot** of devenv's `nix-eval-cache.db` — taken via SQLite's online backup
-   API, integrity-checked at write and read time, and restored only when its content digest matches.
+1. A **validated SQLite snapshot** of devenv's `nix-eval-cache.db` (enabled by default) — taken via
+   SQLite's online backup API and integrity-checked at write and read time.
+2. An experimental bounded set of **validated SQLite online-backup snapshots** from
+   `~/.cache/nix/eval-cache-v6` (opt-in). It selects at most the newest eight `.sqlite` files and
+   stages no more than 128 MiB total.
+
+`~/.cache/nix` itself is opt-in: it is not a cache path unless `cache-nix: true` is supplied.
 
 ## Usage
 
@@ -82,8 +86,9 @@ fallback works but adds a wrapper process.
 | `key-prefix` | `devenv-eval` | First key segment. |
 | `key-suffix` | _(none)_ | e.g. `${{ github.run_id }}`. |
 | `devenv-version` | auto | Key isolation across evaluator releases. |
-| `cache-nix` | `true` | Include `~/.cache/nix`. |
-| `cache-eval` | `true` | Include the eval-DB snapshot. |
+| `cache-nix` | `false` | Include `~/.cache/nix`; excluded from cache paths by default. |
+| `cache-eval` | `true` | Include the validated devenv eval-DB snapshot. |
+| `cache-nix-eval` | `false` | Experimental: stage at most 8 newest `eval-cache-v6/*.sqlite` online backups, up to 128 MiB. |
 | `sqlite3-path` | `sqlite3` | Executable for snapshot and validation; must resolve on PATH. |
 
 ## Outputs
@@ -93,8 +98,10 @@ fallback works but adds a wrapper process.
 | `cache-hit` | `true` when the primary key matched exactly. |
 | `primary-key` | The computed primary cache key. |
 | `devenv-version` | The devenv version used in the key. |
-| `eval-cache-restored` | `true` when a validated DB was installed. |
-| `eval-db-path` | Path to the installed live eval DB, when restored. |
+| `eval-cache-restored` | `true` when a validated devenv DB was installed. |
+| `nix-eval-cache-restored` | `true` when one or more validated Nix `eval-cache-v6` DBs were installed. |
+| `nix-eval-files-restored` | Number of validated Nix `eval-cache-v6` DBs installed. |
+| `eval-db-path` | Path to the installed live devenv eval DB, when restored. |
 
 ## How the key works
 
@@ -109,25 +116,30 @@ and re-evaluate only what changed.
 
 ## What is cached — and what is not
 
-The action caches a **validated snapshot**, not `.devenv/`. The live DB (`<working-directory>/.devenv/nix-eval-cache.db`) is **never** a cache path. `.devenv/` as a whole is unsafe to archive: it holds gc-root/profile
-symlinks into a store a fresh runner lacks. Only the single DB file crosses the cache boundary, and
-only as a SQLite online-backup snapshot.
+The action caches only action-owned staging snapshots, never live SQLite files. The live devenv
+DB (`<working-directory>/.devenv/nix-eval-cache.db`) and Nix's live
+`~/.cache/nix/eval-cache-v6/*.sqlite` files are **never** cache paths; live `-wal` and `-shm`
+sidecars are never staged or restored. `~/.cache/nix` is included only with `cache-nix: true`.
+
+The experimental Nix eval-cache feature selects the eight newest databases by mtime. Files that
+would push the staged total beyond 128 MiB are logged and skipped; they never fail the job.
 
 Removed in v2: `extra-paths` (it was exactly the footgun that caused this bug — it let callers hand
 live mutable state to the archiver) and the `save` boolean input.
 
 Removed in v2.1: the `mode` input (`restore`/`save`). The single call now owns both restore and the
 success-gated snapshot+save sequence via the nested `$/post-snapshot` finalizer.
-
 ## Integrity gates and recovery
 
-- **Write:** snapshot via `sqlite3 <live> ".backup '<staged>'"` → `PRAGMA quick_check` must return
-  `ok` → SHA-256 + byte count written to a manifest atomically (`mktemp` + `mv`).
-- **Read:** manifest parsed and validated (schema, key, version, digest shape) → `quick_check` on the
-  restored snapshot → digest must match the manifest → `quick_check` on the installed copy. Any
-  failure fails hard before devenv opens the DB.
-- **Recovery:** a cache entry is immutable and first-writer-wins. An invalid snapshot causes a hard
-  action failure *before* devenv; rotate the key with `key-suffix` to escape a bad entry.
+
+- **Write:** every DB is created with SQLite's online `.backup`, then `PRAGMA quick_check` must
+  return `ok`; manifest v2 is atomically published with `key`, `devenvVersion`, and per-file
+  `{name, sha256, bytes}` records.
+- **Read:** schema/key/version and per-file filename, size, SHA-256, and `quick_check` are validated
+  before install. Invalid/missing entries are cache misses and are skipped rather than failing the
+  job. Only validated snapshot files are copied; WAL/SHM files are never copied.
+- **Recovery:** a cache entry is immutable and first-writer-wins. A corrupted snapshot is ignored
+  and the job evaluates normally; rotate the key with `key-suffix` to force a fresh entry.
 
 ### Why not just tarball the live DB?
 

@@ -30,6 +30,7 @@ jobs:
           hash-files: devenv.nix
           devenv-version: test-version
           key-suffix: ${{ github.run_id }}
+          cache-nix-eval: true
 
       - name: Assert miss on first run
         shell: bash
@@ -48,6 +49,9 @@ jobs:
         working-directory: tests/fixture
         run: |
           [ -f .devenv/nix-eval-cache.db ] || { echo "no .devenv/nix-eval-cache.db after devenv shell"; exit 1; }
+          mkdir -p "$HOME/.cache/nix/eval-cache-v6"
+          sqlite3 "$HOME/.cache/nix/eval-cache-v6/self-test.sqlite" 'CREATE TABLE IF NOT EXISTS seeded(value TEXT); INSERT INTO seeded VALUES ("seed");'
+          sqlite3 "$HOME/.cache/nix/eval-cache-v6/self-test.sqlite" 'PRAGMA quick_check;' | grep -qx ok
           sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
 
   # reuse proves the post-snapshot finalizer created the seed snapshot before the cache post-save
@@ -77,12 +81,15 @@ jobs:
           hash-files: devenv.nix
           devenv-version: test-version
           key-suffix: ${{ github.run_id }}
+          cache-nix-eval: true
 
       - name: Assert exact hit and eval restored
         shell: bash
         run: |
           [ "${{ steps.cache.outputs.cache-hit }}" == "true" ] || { echo "expected cache hit on reuse run"; exit 1; }
           [ "${{ steps.cache.outputs.eval-cache-restored }}" == "true" ] || { echo "expected eval-cache-restored=true"; exit 1; }
+          [ "${{ steps.cache.outputs.nix-eval-cache-restored }}" == "true" ] || { echo "expected nix-eval-cache-restored=true"; exit 1; }
+          test "${{ steps.cache.outputs.nix-eval-files-restored }}" -ge 1 || { echo "expected at least one restored Nix eval-cache DB"; exit 1; }
 
       - name: Assert installed DB integrity
         shell: bash
@@ -90,6 +97,9 @@ jobs:
         run: |
           [ -f .devenv/nix-eval-cache.db ] || { echo "no installed DB"; exit 1; }
           sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
+          restored_db="$(find "$HOME/.cache/nix/eval-cache-v6" -maxdepth 1 -type f -name '*.sqlite' -print -quit)"
+          [ -n "$restored_db" ] || { echo "no restored Nix eval-cache-v6 fingerprint DB"; exit 1; }
+          sqlite3 "$restored_db" 'PRAGMA quick_check;' | grep -qx ok
 
       - name: Time devenv shell (reuses restored eval cache)
         shell: bash

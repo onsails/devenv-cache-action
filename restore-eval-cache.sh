@@ -1,103 +1,93 @@
 #!/usr/bin/env bash
-# Restore the devenv eval-cache DB snapshot from the staged cache entry.
-#
-# Inputs (env):
-#   STAGING_DIR   staging dir restored by actions/cache/restore
-#   MANIFEST      path to manifest.json
-#   LIVE_DB       path where devenv expects the live DB (created/overwritten)
-#   SQLITE3_PATH  resolved sqlite3 executable
-#   EXPECTED_KEY  primary cache key (for manifest validation)
-#   DEVENV_VERSION expected devenv version (for manifest validation)
-#   CACHE_EVAL    "true" if eval caching is enabled
-#
-# Outputs (GITHUB_OUTPUT):
-#   eval-cache-restored   "true" if a validated DB was installed, else "false"
-#   eval-db-path          path to the installed live DB when restored
+# Restore validated action-owned SQLite snapshots. This script never copies live WAL/SHM files.
+# Inputs: STAGING_DIR MANIFEST LIVE_DB SQLITE3_PATH EXPECTED_KEY DEVENV_VERSION CACHE_EVAL
+#         CACHE_NIX_EVAL. Outputs eval-cache-restored, eval-db-path, nix-eval-cache-restored,
+#         nix-eval-files-restored.
 set -euo pipefail
 
+readonly MAX_NIX_EVAL_FILES=8
+readonly MAX_NIX_EVAL_BYTES=$((128 * 1024 * 1024))
 out_file="${GITHUB_OUTPUT:-/dev/stdout}"
 emit() { printf '%s\n' "$1" >> "$out_file"; }
-
-emit "eval-cache-restored=false"
-
-# If eval caching is disabled, nothing to do.
-if [ "${CACHE_EVAL}" != "true" ]; then
-  exit 0
-fi
-
-# If the staging dir was not restored (cache miss), this is a normal miss.
-snapshot="${STAGING_DIR}/nix-eval-cache.db"
-if [ ! -d "${STAGING_DIR}" ] || [ ! -f "${snapshot}" ] || [ ! -f "${MANIFEST}" ]; then
-  echo "devenv-cache-action: eval cache miss (no snapshot/manifest restored)" >&2
-  exit 0
-fi
-
-# Validate manifest fields using pure bash (no node/jq dependency).
-# Manifest shape: {"schema":1,"manifestFormat":1,"key":"...","devenvVersion":"...","dbBytes":N,"dbSha256":"..."}
-manifest_json="$(cat "${MANIFEST}")" || {
-  echo "devenv-cache-action: manifest not readable, treating as miss" >&2
-  exit 0
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
-# Extract fields via grep+sed (flat JSON, known keys).
-m_schema="$(printf '%s' "$manifest_json" | grep -o '"schema":[0-9]*' | head -1 | cut -d: -f2)"
-m_format="$(printf '%s' "$manifest_json" | grep -o '"manifestFormat":[0-9]*' | head -1 | cut -d: -f2)"
-m_key="$(printf '%s' "$manifest_json" | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')"
-m_version="$(printf '%s' "$manifest_json" | sed -n 's/.*"devenvVersion":"\([^"]*\)".*/\1/p')"
-m_sha="$(printf '%s' "$manifest_json" | sed -n 's/.*"dbSha256":"\([0-9a-f]*\)".*/\1/p')"
-m_bytes="$(printf '%s' "$manifest_json" | grep -o '"dbBytes":[0-9]*' | head -1 | cut -d: -f2)"
+emit 'eval-cache-restored=false'
+emit 'nix-eval-cache-restored=false'
+emit 'nix-eval-files-restored=0'
 
-# Validate extracted fields.
-if [ "$m_schema" != "1" ] || [ "$m_format" != "1" ]; then
-  echo "devenv-cache-action: manifest schema/format mismatch (schema=$m_schema format=$m_format), treating as miss" >&2
-  exit 0
-fi
-if [ "$m_key" != "$EXPECTED_KEY" ]; then
-  echo "devenv-cache-action: manifest key mismatch, treating as miss" >&2
-  exit 0
-fi
-if [ "${m_version:-unknown}" != "${DEVENV_VERSION:-unknown}" ]; then
-  echo "devenv-cache-action: manifest devenv version mismatch, treating as miss" >&2
-  exit 0
-fi
-if ! printf '%s' "$m_sha" | grep -qE '^[0-9a-f]{64}$'; then
-  echo "devenv-cache-action: manifest dbSha256 is not 64-hex, treating as miss" >&2
-  exit 0
-fi
-if [ -z "$m_bytes" ] || ! printf '%s' "$m_bytes" | grep -qE '^[0-9]+$'; then
-  echo "devenv-cache-action: manifest dbBytes invalid, treating as miss" >&2
-  exit 0
-fi
-declared_sha="$m_sha"
+if [ "${CACHE_EVAL}" != 'true' ] && [ "${CACHE_NIX_EVAL}" != 'true' ]; then exit 0; fi
+if [ ! -d "${STAGING_DIR}" ] || [ ! -f "${MANIFEST}" ]; then exit 0; fi
 
-# quick_check on the restored snapshot BEFORE it touches the live path.
-check="$( "${SQLITE3_PATH}" "${snapshot}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n' )"
-if [ "$check" != "ok" ]; then
-  echo "devenv-cache-action: restored snapshot failed quick_check, treating as miss" >&2
+# Parse and validate JSON structurally using the runner-provided Node runtime. Its output is a
+# tab-separated, fixed-field protocol; file names are rejected unless safe before shell consumes it.
+parsed="$(mktemp)"
+trap 'rm -f "${parsed}"' EXIT
+if ! MANIFEST="${MANIFEST}" EXPECTED_KEY="${EXPECTED_KEY}" DEVENV_VERSION="${DEVENV_VERSION}" \
+  MAX_NIX_EVAL_FILES_VALUE="${MAX_NIX_EVAL_FILES}" MAX_NIX_EVAL_BYTES_VALUE="${MAX_NIX_EVAL_BYTES}" node <<'NODE' >"${parsed}"
+'use strict'
+const fs = require('fs')
+try {
+  const m = JSON.parse(fs.readFileSync(process.env.MANIFEST, 'utf8'))
+  const fail = () => process.exit(1)
+  if (m.schema !== 1 || m.manifestFormat !== 2 || m.key !== process.env.EXPECTED_KEY ||
+      m.devenvVersion !== process.env.DEVENV_VERSION || !Array.isArray(m.nixEvalFiles)) fail()
+  const safeNixName = /^[A-Za-z0-9._-]+\.sqlite$/
+  const valid = (x, nameTest) => x && typeof x.name === 'string' && nameTest.test(x.name) &&
+    typeof x.sha256 === 'string' && /^[0-9a-f]{64}$/.test(x.sha256) &&
+    Number.isSafeInteger(x.bytes) && x.bytes >= 0
+  if (m.evalDb !== null && !valid(m.evalDb, /^nix-eval-cache\.db$/)) fail()
+  if (m.nixEvalFiles.length > Number(process.env.MAX_NIX_EVAL_FILES_VALUE) ||
+      !m.nixEvalFiles.every(x => valid(x, safeNixName))) fail()
+  const total = m.nixEvalFiles.reduce((sum, x) => sum + x.bytes, 0)
+  if (!Number.isSafeInteger(total) || total > Number(process.env.MAX_NIX_EVAL_BYTES_VALUE)) fail()
+  process.stdout.write(`E\t${m.evalDb ? m.evalDb.name : ''}\t${m.evalDb ? m.evalDb.sha256 : ''}\t${m.evalDb ? m.evalDb.bytes : ''}\n`)
+  for (const x of m.nixEvalFiles) process.stdout.write(`N\t${x.name}\t${x.sha256}\t${x.bytes}\n`)
+} catch { process.exit(1) }
+NODE
+then
+  echo 'devenv-cache-action: invalid snapshot manifest v2; treating cache as a miss' >&2
   exit 0
 fi
+restored=0
 
-# Verify the snapshot digest matches the manifest.
-actual_sha="$(sha256sum "${snapshot}" | cut -d' ' -f1)"
-if [ "$actual_sha" != "$declared_sha" ]; then
-  echo "devenv-cache-action: restored snapshot digest mismatch (manifest ${declared_sha:0:12}, actual ${actual_sha:0:12}), treating as miss" >&2
-  exit 0
+while IFS=$'\t' read -r kind name declared_sha declared_bytes; do
+  [ -n "${kind}" ] || continue
+  if [ "${kind}" = E ] && [ "${CACHE_EVAL}" = 'true' ] && [ -n "${name}" ]; then
+    snapshot="${STAGING_DIR}/${name}"
+    [ -f "${snapshot}" ] || continue
+    [ "$(wc -c < "${snapshot}" | tr -d ' ')" = "${declared_bytes}" ] || continue
+    [ "$(sha256_file "${snapshot}")" = "${declared_sha}" ] || continue
+    check="$("${SQLITE3_PATH}" "${snapshot}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
+    [ "${check}" = ok ] || continue
+    mkdir -p "$(dirname "${LIVE_DB}")"
+    rm -f "${LIVE_DB}" "${LIVE_DB}-wal" "${LIVE_DB}-shm"
+    cp "${snapshot}" "${LIVE_DB}"
+    installed_check="$("${SQLITE3_PATH}" "${LIVE_DB}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
+    if [ "${installed_check}" != ok ]; then rm -f "${LIVE_DB}" "${LIVE_DB}-wal" "${LIVE_DB}-shm"; continue; fi
+    emit 'eval-cache-restored=true'
+    emit "eval-db-path=${LIVE_DB}"
+  elif [ "${kind}" = N ] && [ "${CACHE_NIX_EVAL}" = 'true' ]; then
+    snapshot="${STAGING_DIR}/nix-eval-cache-v6/${name}"
+    [ -f "${snapshot}" ] || continue
+    [ "$(wc -c < "${snapshot}" | tr -d ' ')" = "${declared_bytes}" ] || continue
+    [ "$(sha256_file "${snapshot}")" = "${declared_sha}" ] || continue
+    check="$("${SQLITE3_PATH}" "${snapshot}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
+    [ "${check}" = ok ] || continue
+    destination="${HOME}/.cache/nix/eval-cache-v6/${name}"
+    mkdir -p "$(dirname "${destination}")"
+    # A staged online backup is the only source. Never restore archived WAL/SHM sidecars.
+    cp "${snapshot}" "${destination}"
+    installed_check="$("${SQLITE3_PATH}" "${destination}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
+    if [ "${installed_check}" != ok ]; then rm -f "${destination}"; continue; fi
+    restored=$((restored + 1))
+  fi
+done < "${parsed}"
+
+if [ "${restored:-0}" -gt 0 ]; then
+  emit 'nix-eval-cache-restored=true'
+  emit "nix-eval-files-restored=${restored}"
+  echo "devenv-cache-action: restored ${restored} validated Nix eval-cache-v6 DB(s)" >&2
 fi
-
-# Install the verified snapshot to the live path.
-mkdir -p "$(dirname "${LIVE_DB}")"
-# Remove only the target DB and its WAL/SHM sidecars — never the whole .devenv/.
-rm -f "${LIVE_DB}" "${LIVE_DB}-wal" "${LIVE_DB}-shm"
-cp "${snapshot}" "${LIVE_DB}"
-
-# quick_check on the installed copy. If it fails, remove only that copy and fail hard.
-installed_check="$( "${SQLITE3_PATH}" "${LIVE_DB}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n' )"
-if [ "$installed_check" != "ok" ]; then
-  rm -f "${LIVE_DB}"
-  echo "devenv-cache-action: installed DB failed quick_check; removed. Failing." >&2
-  exit 1
-fi
-
-emit "eval-cache-restored=true"
-emit "eval-db-path=${LIVE_DB}"
-echo "devenv-cache-action: eval DB restored and verified (sha256 ${actual_sha:0:12})" >&2

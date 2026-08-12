@@ -1,9 +1,9 @@
 name: devenv cache
 description: >-
-  Cache devenv's Nix evaluation state (~/.cache/nix plus a validated SQLite snapshot of the
-  nix-eval-cache.db) so ephemeral CI runners skip full re-evaluation. One call near the top of
-  the job restores at action main and snapshots after successful job work via a success-gated
-  post callback that runs before the cache post-save.
+  Cache validated devenv and optional bounded Nix evaluation SQLite snapshots. The action restores
+  at main and snapshots after successful job work via a success-gated post callback that runs
+  before the cache post-save. ~/.cache/nix is opt-in and live SQLite DB/WAL/SHM files are never
+  archived.
 author: onsails
 branding:
   icon: zap
@@ -40,11 +40,16 @@ inputs:
   cache-nix:
     description: Include ~/.cache/nix in the cache entry.
     required: false
-    default: 'true'
+    default: 'false'
   cache-eval:
-    description: Include the validated eval-DB snapshot in the cache entry.
+    description: Include the validated devenv eval-DB snapshot in the cache entry.
     required: false
     default: 'true'
+  cache-nix-eval:
+    description: >-
+      Experimentally cache bounded, validated SQLite backups from ~/.cache/nix/eval-cache-v6.
+    required: false
+    default: 'false'
   sqlite3-path:
     description: >-
       Executable used for the snapshot and integrity validation. Must resolve on PATH outside
@@ -65,6 +70,12 @@ outputs:
   eval-cache-restored:
     description: "'true' when a validated eval-DB snapshot was installed."
     value: ${{ steps.restore-eval.outputs.eval-cache-restored }}
+  nix-eval-cache-restored:
+    description: "'true' when one or more validated Nix eval-cache-v6 files were installed."
+    value: ${{ steps.restore-eval.outputs.nix-eval-cache-restored }}
+  nix-eval-files-restored:
+    description: Number of validated Nix eval-cache-v6 files installed.
+    value: ${{ steps.restore-eval.outputs.nix-eval-files-restored }}
   eval-db-path:
     description: Path to the installed live eval DB, when restored.
     value: ${{ steps.restore-eval.outputs.eval-db-path }}
@@ -82,6 +93,8 @@ runs:
         KEY_PREFIX: ${{ inputs.key-prefix }}
         KEY_SUFFIX: ${{ inputs.key-suffix }}
         CACHE_EVAL: ${{ inputs.cache-eval }}
+        CACHE_NIX: ${{ inputs.cache-nix }}
+        CACHE_NIX_EVAL: ${{ inputs.cache-nix-eval }}
       run: $GITHUB_ACTION_PATH/compute-key.sh
 
     # --- resolve sqlite3: prefer PATH, fall back to nix run, else fail ---
@@ -90,6 +103,7 @@ runs:
       env:
         SQLITE3_INPUT: ${{ inputs.sqlite3-path }}
         CACHE_EVAL: ${{ inputs.cache-eval }}
+        CACHE_NIX_EVAL: ${{ inputs.cache-nix-eval }}
       run: |
         set -euo pipefail
         resolved=""
@@ -101,7 +115,7 @@ runs:
           if [ -n "$resolved" ] && [ ! -x "$resolved" ]; then resolved=""; fi
         fi
         # 2. Fall back to nix run wrapper (works on any runner with nix installed)
-        if [ "${CACHE_EVAL}" = "true" ] && [ -z "$resolved" ]; then
+        if { [ "${CACHE_EVAL}" = "true" ] || [ "${CACHE_NIX_EVAL}" = "true" ]; } && [ -z "$resolved" ]; then
           if command -v nix >/dev/null 2>&1; then
             wrapper="$RUNNER_TEMP/devenv-cache-sqlite3-wrapper.sh"
             mkdir -p "$RUNNER_TEMP"
@@ -117,7 +131,7 @@ runs:
           fi
         fi
         # 3. Hard fail only if both failed
-        if [ "${CACHE_EVAL}" = "true" ] && [ -z "$resolved" ]; then
+        if { [ "${CACHE_EVAL}" = "true" ] || [ "${CACHE_NIX_EVAL}" = "true" ]; } && [ -z "$resolved" ]; then
           echo "devenv-cache-action: sqlite3 not found on PATH and nix run fallback failed. Install sqlite3 or set sqlite3-path." >&2
           exit 1
         fi
@@ -136,7 +150,6 @@ runs:
 
     # --- restore eval DB snapshot from the restored staging directory ---
     - id: restore-eval
-      if: ${{ inputs.cache-eval == 'true' }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -147,6 +160,7 @@ runs:
         EXPECTED_KEY: ${{ steps.key.outputs.key-base }}
         DEVENV_VERSION: ${{ steps.key.outputs.devenv-version }}
         CACHE_EVAL: ${{ inputs.cache-eval }}
+        CACHE_NIX_EVAL: ${{ inputs.cache-nix-eval }}
         GITHUB_ACTION_PATH: ${{ env.GITHUB_ACTION_PATH }}
       run: $GITHUB_ACTION_PATH/restore-eval-cache.sh
 
@@ -156,6 +170,7 @@ runs:
     #     the staging directory. The $/ self-repository reference resolves to
     #     onsails/devenv-cache-action at the same commit as this outer action. ---
     - uses: $/post-snapshot
+      if: ${{ inputs.cache-eval == 'true' || inputs.cache-nix-eval == 'true' }}
       with:
         working-directory: ${{ inputs.working-directory }}
         snapshot-script: ${{ github.action_path }}/snapshot-eval-cache.sh
@@ -167,3 +182,4 @@ runs:
         key-base: ${{ steps.key.outputs.key-base }}
         devenv-version: ${{ steps.key.outputs.devenv-version }}
         cache-eval: ${{ inputs.cache-eval }}
+        cache-nix-eval: ${{ inputs.cache-nix-eval }}

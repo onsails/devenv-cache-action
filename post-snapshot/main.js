@@ -29,7 +29,8 @@ const config = {
   primaryKey: input('primary-key'),
   keyBase: input('key-base'),
   devenvVersion: input('devenv-version'),
-  cacheEval: input('cache-eval')
+  cacheEval: input('cache-eval'),
+  cacheNixEval: input('cache-nix-eval')
 }
 
 const encoded = Buffer.from(JSON.stringify(config), 'utf8').toString('base64')

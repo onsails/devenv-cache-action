@@ -6,12 +6,10 @@
 #   primary         primary cache key
 #   restore         restore-keys prefix list (same version, any digest)
 #   devenv-version  resolved devenv version
-#   staging-dir     action-owned staging dir under $RUNNER_TEMP for snapshot/manifest
-#   live-db         path to the live eval DB inside the working directory
-#   staged-db       path the snapshot is written to (staging-dir/nix-eval-cache.db)
+#   staging-dir     action-owned staging dir under $RUNNER_TEMP for snapshots/manifests
+#   live-db         path to the live devenv eval DB inside the working directory
 #   manifest        path to the manifest JSON (staging-dir/manifest.json)
-#   restore-paths   newline list for actions/cache/restore (snapshot dir + ~/.cache/nix)
-#   save-paths      newline list for actions/cache/save
+#   paths           newline list for actions/cache; excludes disabled cache classes
 set -euo pipefail
 
 sha256_stdin() {
@@ -86,24 +84,25 @@ staging="${RUNNER_TEMP:-/tmp}/devenv-cache-action/${base}-${digest}"
 # Live DB lives in the working directory's .devenv/.
 live_db="$(pwd -P)/.devenv/nix-eval-cache.db"
 
-# Paths published for actions/cache.
-home_cache="$HOME/.cache/nix"
-[ -d "$home_cache" ] || mkdir -p "$home_cache"
-
-# cache-nix path list (for restore/save) always includes ~/.cache/nix; the snapshot
-# directory is the second path when cache-eval is on. save-paths is built at save
-# time after the snapshot exists, but restore must look in the same place.
-if [ "${CACHE_EVAL}" = "true" ]; then
-  paths="${staging}"$'\n'"${home_cache}"
-else
-  paths="${home_cache}"
+# Paths published for actions/cache. The action-owned staging directory is needed for either
+# validated SQLite snapshot feature; ~/.cache/nix is included only when explicitly requested.
+paths=''
+if [ "${CACHE_EVAL:-true}" = "true" ] || [ "${CACHE_NIX_EVAL:-false}" = "true" ]; then
+  paths="${staging}"
 fi
+if [ "${CACHE_NIX:-false}" = "true" ]; then
+  home_cache="$HOME/.cache/nix"
+  [ -d "$home_cache" ] || mkdir -p "$home_cache"
+  if [ -n "$paths" ]; then
+    paths+=$'\n'
+  fi
+  paths+="${home_cache}"
+fi
+[ -n "$paths" ] || { echo "devenv-cache-action: all cache classes are disabled" >&2; exit 1; }
 
 emit "devenv-version=${version}"
 emit "primary=${primary}"
-emit "key-base=${base}-${digest}"
-emit_multiline "restore" "${base}-${digest}-
-${base}-"
+emit_multiline "restore" "${base}-${digest}-"
 emit_multiline "paths" "${paths}"
 emit "staging-dir=${staging}"
 emit "live-db=${live_db}"

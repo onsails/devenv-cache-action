@@ -31,7 +31,8 @@ for (const key of [
   'primaryKey',
   'keyBase',
   'devenvVersion',
-  'cacheEval'
+  'cacheEval',
+  'cacheNixEval'
 ]) {
   if (typeof config[key] !== 'string' || config[key] === '') {
     throw new Error(`post-snapshot: finalizer-config field '${key}' is missing or not a string`)
@@ -47,7 +48,8 @@ const env = {
   EXPECTED_KEY: config.primaryKey,
   EXPECTED_KEY_BASE: config.keyBase,
   DEVENV_VERSION: config.devenvVersion,
-  CACHE_EVAL: config.cacheEval
+  CACHE_EVAL: config.cacheEval,
+  CACHE_NIX_EVAL: config.cacheNixEval
 }
 
 // No shell: snapshot-eval-cache.sh is the single argv element, so there is no command surface
