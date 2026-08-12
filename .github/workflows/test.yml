@@ -110,9 +110,11 @@ jobs:
         working-directory: tests/fixture
         run: |
           sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
-          restored_db="$(find "$HOME/.cache/nix/eval-cache-v6" -maxdepth 1 -type f -name '*.sqlite' -print -quit)"
-          [ -n "$restored_db" ] || { echo "no restored Nix eval-cache-v6 DB"; exit 1; }
-          sqlite3 "$restored_db" 'PRAGMA quick_check;' | grep -qx ok
+          self_test="$HOME/.cache/nix/eval-cache-v6/self-test.sqlite"
+          [ -f "$self_test" ] || { echo "seeded self-test.sqlite was not restored"; exit 1; }
+          sqlite3 "$self_test" 'PRAGMA quick_check;' | grep -qx ok
+          [ "$(sqlite3 "$self_test" 'SELECT value FROM seeded;')" = seed ] \
+            || { echo "restored self-test.sqlite does not contain the seeded row"; exit 1; }
 
       - name: Time real devenv shell (reuses restored eval cache)
         shell: bash
@@ -161,9 +163,11 @@ jobs:
         working-directory: tests/fixture
         run: |
           sqlite3 .devenv/nix-eval-cache.db 'PRAGMA quick_check;' | grep -qx ok
-          restored_db="$(find "$HOME/.cache/nix/eval-cache-v6" -maxdepth 1 -type f -name '*.sqlite' -print -quit)"
-          [ -n "$restored_db" ] || { echo "no restored Nix eval-cache-v6 DB"; exit 1; }
-          sqlite3 "$restored_db" 'PRAGMA quick_check;' | grep -qx ok
+          self_test="$HOME/.cache/nix/eval-cache-v6/self-test.sqlite"
+          [ -f "$self_test" ] || { echo "seeded self-test.sqlite was not restored"; exit 1; }
+          sqlite3 "$self_test" 'PRAGMA quick_check;' | grep -qx ok
+          [ "$(sqlite3 "$self_test" 'SELECT value FROM seeded;')" = seed ] \
+            || { echo "restored self-test.sqlite does not contain the seeded row"; exit 1; }
 
       - name: Time real devenv shell (reuses restored eval cache)
         shell: bash
@@ -180,12 +184,17 @@ jobs:
       - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
+
       - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
         with:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+
+      - name: Assert Nix eval restore replaces stale WAL and SHM sidecars
+        shell: bash
+        run: tests/restore-stale-wal.sh
 
       - name: Assert zero-match hard error
         id: cache

@@ -78,10 +78,16 @@ while IFS=$'\t' read -r kind name declared_sha declared_bytes; do
     [ "${check}" = ok ] || continue
     destination="${HOME}/.cache/nix/eval-cache-v6/${name}"
     mkdir -p "$(dirname "${destination}")"
-    # A staged online backup is the only source. Never restore archived WAL/SHM sidecars.
+    # A staged online backup is the only source. Replace the DB and every stale live sidecar
+    # atomically from the restore operation's perspective; an existing WAL/SHM can otherwise
+    # make SQLite attach incompatible pages to the newly copied snapshot.
+    rm -f "${destination}" "${destination}-wal" "${destination}-shm"
     cp "${snapshot}" "${destination}"
     installed_check="$("${SQLITE3_PATH}" "${destination}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
-    if [ "${installed_check}" != ok ]; then rm -f "${destination}"; continue; fi
+    if [ "${installed_check}" != ok ]; then
+      rm -f "${destination}" "${destination}-wal" "${destination}-shm"
+      continue
+    fi
     restored=$((restored + 1))
   fi
 done < "${parsed}"
