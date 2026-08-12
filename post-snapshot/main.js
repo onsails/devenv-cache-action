@@ -11,7 +11,7 @@
 const fs = require('fs')
 
 function input(name) {
-  const val = process.env[`INPUT_${name.replace(/-/g, '_').toUpperCase()}`]
+  const val = process.env[`INPUT_${name.replace(/ /g, '_').toUpperCase()}`]
   if (val === undefined || val === '') {
     throw new Error(`post-snapshot: missing required input '${name}'`)
   }
