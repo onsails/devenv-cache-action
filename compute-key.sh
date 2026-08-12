@@ -40,6 +40,22 @@ emit_multiline() {
   printf '%s<<EOF\n%s\nEOF\n' "$name" "$body" >> "$out_file"
 }
 
+reject_crlf() {
+  local name="$1" value="$2"
+  case "${value}" in
+    *$'\r'*|*$'\n'*)
+      echo "devenv-cache-action: ${name} must not contain CR or LF" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# These values are later written to GITHUB_OUTPUT. Validate caller-controlled input before it can
+# participate in either cache-key construction or an output file command.
+reject_crlf key-prefix "${KEY_PREFIX:-}"
+reject_crlf key-suffix "${KEY_SUFFIX:-}"
+reject_crlf devenv-version "${DEVENV_VERSION_INPUT:-}"
+
 # Resolve the devenv version to embed in the key.
 version="${DEVENV_VERSION_INPUT:-}"
 if [ -z "$version" ]; then
@@ -47,6 +63,7 @@ if [ -z "$version" ]; then
   version="$(devenv version 2>/dev/null | awk 'NR==1 {print $2}')"
 fi
 [ -n "$version" ] || version=unknown
+reject_crlf devenv-version "${version}"
 
 # Hash the contents of every hash-files entry that exists, plus the working-directory
 # realpath: devenv's FileInputDesc records absolute paths, so a DB restored under a
