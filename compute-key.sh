@@ -4,7 +4,8 @@
 #
 # Outputs:
 #   primary         primary cache key
-#   restore         restore-keys prefix list (same version, any digest)
+#   key-base        layout/configuration/digest key without optional suffix
+#   restore         restore-keys prefix list (same digest, earlier suffixes only)
 #   devenv-version  resolved devenv version
 #   staging-dir     action-owned staging dir under $RUNNER_TEMP for snapshots/manifests
 #   live-db         path to the live devenv eval DB inside the working directory
@@ -73,13 +74,28 @@ fi
 
 digest="$(sha256_stdin < "$digest_input")"
 arch="$(uname -m)"
-base="${KEY_PREFIX}-${RUNNER_OS}-${arch}-devenv${version}"
-primary="${base}-${digest}"
+
+# Cache archives are immutable and actions/cache restores their contents directly. Keep every
+# archive layout and enabled cache class in this namespace so a legacy whole ~/.cache/nix archive
+# — or a cache created with a different class combination — cannot be restored here.
+cache_bool() {
+  case "$2" in
+    true) printf '1' ;;
+    false) printf '0' ;;
+    *) echo "devenv-cache-action: $1 must be 'true' or 'false', got '$2'" >&2; exit 1 ;;
+  esac
+}
+cache_nix="$(cache_bool cache-nix "${CACHE_NIX:-false}")"
+cache_eval="$(cache_bool cache-eval "${CACHE_EVAL:-true}")"
+cache_nix_eval="$(cache_bool cache-nix-eval "${CACHE_NIX_EVAL:-false}")"
+base="${KEY_PREFIX}-${RUNNER_OS}-${arch}-layoutv3-nix${cache_nix}-eval${cache_eval}-nixeval${cache_nix_eval}-devenv${version}"
+key_base="${base}-${digest}"
+primary="${key_base}"
 [ -z "${KEY_SUFFIX:-}" ] || primary="${primary}-${KEY_SUFFIX}"
 
 # Staging directory for the snapshot/manifest under $RUNNER_TEMP.
 # Mode 0700; created at snapshot time. We only emit the path here.
-staging="${RUNNER_TEMP:-/tmp}/devenv-cache-action/${base}-${digest}"
+staging="${RUNNER_TEMP:-/tmp}/devenv-cache-action/${key_base}"
 
 # Live DB lives in the working directory's .devenv/.
 live_db="$(pwd -P)/.devenv/nix-eval-cache.db"
@@ -87,10 +103,10 @@ live_db="$(pwd -P)/.devenv/nix-eval-cache.db"
 # Paths published for actions/cache. The action-owned staging directory is needed for either
 # validated SQLite snapshot feature; ~/.cache/nix is included only when explicitly requested.
 paths=''
-if [ "${CACHE_EVAL:-true}" = "true" ] || [ "${CACHE_NIX_EVAL:-false}" = "true" ]; then
+if [ "${cache_eval}" = "1" ] || [ "${cache_nix_eval}" = "1" ]; then
   paths="${staging}"
 fi
-if [ "${CACHE_NIX:-false}" = "true" ]; then
+if [ "${cache_nix}" = "1" ]; then
   home_cache="$HOME/.cache/nix"
   [ -d "$home_cache" ] || mkdir -p "$home_cache"
   if [ -n "$paths" ]; then
@@ -102,7 +118,8 @@ fi
 
 emit "devenv-version=${version}"
 emit "primary=${primary}"
-emit_multiline "restore" "${base}-${digest}-"
+emit "key-base=${key_base}"
+emit_multiline "restore" "${key_base}-"
 emit_multiline "paths" "${paths}"
 emit "staging-dir=${staging}"
 emit "live-db=${live_db}"

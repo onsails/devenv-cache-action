@@ -34,9 +34,10 @@ archives it.
 
 - name: Restore devenv evaluation cache
   id: devenv-cache
-  uses: onsails/devenv-cache-action@<commit-sha> # v2.1.0
+  uses: onsails/devenv-cache-action@<commit-sha> # <next-version>
   with:
     key-suffix: ${{ github.run_id }}
+    cache-nix-eval: true
 
 # ... all devenv work ...
 ```
@@ -57,9 +58,10 @@ then the cache post-save archives that directory. The snapshot therefore always 
 archive is built. `key-suffix: ${{ github.run_id }}` rotates entries per run so a poisoned cache
 from a crashed job never sticks.
 
-The self-test workflow (`seed` → `reuse`) proves this ordering: the seed's only snapshot is
-produced by the finalizer post callback, and `reuse` asserts `eval-cache-restored=true` from it.
-If the finalizer did not run before the cache save, `reuse` would see a cache hit with no snapshot.
+The self-test workflow (`seed` → `warm-1` → `warm-2`) proves this ordering twice: the seed's only
+snapshot is produced by the finalizer post callback, and each warm job asserts
+`eval-cache-restored=true` from it. If the finalizer did not run before the cache save, the first
+warm job would see a cache hit with no snapshot.
 
 ## Tool prerequisite
 
@@ -106,13 +108,18 @@ fallback works but adds a wrapper process.
 ## How the key works
 
 ```
-<prefix>-<os>-<arch>-devenv<version>-<sha256(hash-files ++ realpath(working-directory))>[-<suffix>]
+<prefix>-<os>-<arch>-layoutv3-nix<0|1>-eval<0|1>-nixeval<0|1>-devenv<version>-<sha256(hash-files ++ realpath(working-directory))>[-<suffix>]
 ```
+
+`layoutv3` identifies the archive layout. The three boolean segments name the enabled cache
+classes (`cache-nix`, `cache-eval`, and `cache-nix-eval`, respectively). They isolate immutable
+entries with incompatible path sets, and prevent prior layouts — including old archives containing
+all of `~/.cache/nix` — from matching this action.
 
 The working-directory realpath enters the digest because devenv's `FileInputDesc` records **absolute**
 paths; a DB restored under a different checkout path validates nothing and is dead weight. Restore
-falls back to any digest for the same devenv version, letting devenv 2.x revalidate by content hash
-and re-evaluate only what changed.
+fallbacks are limited to the **same digest and configuration** (earlier suffixes only), so changed
+inputs never restore an incompatible archive.
 
 ## What is cached — and what is not
 
