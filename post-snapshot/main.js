@@ -8,6 +8,7 @@
 // No cache or snapshot side effect here — main exists only to register and parameterize the post.
 'use strict'
 
+const crypto = require('crypto')
 const fs = require('fs')
 
 function input(name) {
@@ -36,4 +37,9 @@ const stateFile = process.env.GITHUB_STATE
 if (!stateFile) {
   throw new Error('post-snapshot: GITHUB_STATE is not set')
 }
-fs.appendFileSync(stateFile, `finalizer-config=${encoded}\n`)
+
+const delimiter = `ghadelimiter_${crypto.randomUUID()}`
+if (encoded.split(/\r?\n/).includes(delimiter)) {
+  throw new Error('post-snapshot: finalizer-config state contains its heredoc delimiter')
+}
+fs.appendFileSync(stateFile, `finalizer-config<<${delimiter}\n${encoded}\n${delimiter}\n`)

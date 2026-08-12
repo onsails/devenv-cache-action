@@ -9,9 +9,9 @@
 
 const { execFileSync } = require('child_process')
 
-const raw = process.env.STATE_FINALIZER_CONFIG
+const raw = process.env['STATE_finalizer-config']
 if (!raw) {
-  throw new Error('post-snapshot: STATE_FINALIZER_CONFIG is not set; main.js did not register the post callback')
+  throw new Error('post-snapshot: STATE_finalizer-config is not set; main.js did not register the post callback')
 }
 
 let config
