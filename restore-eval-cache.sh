@@ -19,7 +19,17 @@ emit 'nix-eval-cache-restored=false'
 emit 'nix-eval-files-restored=0'
 
 if [ "${CACHE_EVAL}" != 'true' ] && [ "${CACHE_NIX_EVAL}" != 'true' ]; then exit 0; fi
-if [ ! -d "${STAGING_DIR}" ] || [ ! -f "${MANIFEST}" ]; then exit 0; fi
+eval_restored=false
+nix_restored=0
+nix_restored_bytes=0
+emit_stats() {
+  printf 'devenv-cache-action: stat: devenv-eval-db-restored = %s\n' "${eval_restored}" >&2
+  printf 'devenv-cache-action: stat: nix-eval-restored = %s files, %s bytes\n' "${nix_restored}" "${nix_restored_bytes}" >&2
+}
+if [ ! -d "${STAGING_DIR}" ] || [ ! -f "${MANIFEST}" ]; then
+  emit_stats
+  exit 0
+fi
 
 # Parse the flat, action-written v2 manifest without an external JSON runtime on the runner PATH.
 # Output remains the tab-separated E/N protocol consumed below. Snapshot key/version strings are
@@ -107,9 +117,11 @@ if ! (
   done
 ) >"${parsed}"; then
   echo 'devenv-cache-action: invalid snapshot manifest v2; treating cache as a miss' >&2
+  emit_stats
   exit 0
 fi
 restored=0
+restored_bytes=0
 
 while IFS=$'\t' read -r kind name declared_sha declared_bytes; do
   [ -n "${kind}" ] || continue
@@ -127,6 +139,7 @@ while IFS=$'\t' read -r kind name declared_sha declared_bytes; do
     if [ "${installed_check}" != ok ]; then rm -f "${LIVE_DB}" "${LIVE_DB}-wal" "${LIVE_DB}-shm"; continue; fi
     emit 'eval-cache-restored=true'
     emit "eval-db-path=${LIVE_DB}"
+    eval_restored=true
   elif [ "${kind}" = N ] && [ "${CACHE_NIX_EVAL}" = 'true' ]; then
     snapshot="${STAGING_DIR}/nix-eval-cache-v6/${name}"
     [ -f "${snapshot}" ] || continue
@@ -147,9 +160,13 @@ while IFS=$'\t' read -r kind name declared_sha declared_bytes; do
       continue
     fi
     restored=$((restored + 1))
+    restored_bytes=$((restored_bytes + declared_bytes))
   fi
 done < "${parsed}"
 
+nix_restored="${restored}"
+nix_restored_bytes="${restored_bytes}"
+emit_stats
 if [ "${restored:-0}" -gt 0 ]; then
   emit 'nix-eval-cache-restored=true'
   emit "nix-eval-files-restored=${restored}"
