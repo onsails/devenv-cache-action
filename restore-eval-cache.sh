@@ -63,7 +63,7 @@ if ! (
   after_nix="${manifest_json#*\"nixEvalFiles\":[}"
   [ "${after_nix}" != "${manifest_json}" ] || exit 1
   [[ "${after_nix}" == *']}' ]] || exit 1
-  nix_entries="${after_nix:0:${#after_nix}-2}"
+  nix_entries="${after_nix%%]*}"
 
   [ "${m_schema}" = 1 ] && [ "${m_format}" = 2 ] || exit 1
   [ "${m_key}" = "$(json_escape "${EXPECTED_KEY}")" ] || exit 1
