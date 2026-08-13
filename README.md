@@ -34,7 +34,7 @@ archives it.
 
 - name: Restore devenv evaluation cache
   id: devenv-cache
-  uses: onsails/devenv-cache-action@v3.0.0
+  uses: onsails/devenv-cache-action@v3
   with:
     key-suffix: ${{ github.run_id }}
     cache-nix-eval: true
