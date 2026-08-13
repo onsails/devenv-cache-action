@@ -25,16 +25,16 @@ post callback that snapshots the live eval DB after job completion — before th
 archives it.
 
 ```yaml
-- uses: actions/checkout@v5
-- uses: cachix/install-nix-action@v31
-- uses: cachix/cachix-action@v16
+- uses: actions/checkout@v7
+- uses: cachix/install-nix-action@v31.11.0
+- uses: cachix/cachix-action@v17
   with:
     name: devenv
 - run: nix profile add nixpkgs#devenv
 
 - name: Restore devenv evaluation cache
   id: devenv-cache
-  uses: onsails/devenv-cache-action@<commit-sha> # <next-version>
+  uses: onsails/devenv-cache-action@v3.0.0
   with:
     key-suffix: ${{ github.run_id }}
     cache-nix-eval: true
