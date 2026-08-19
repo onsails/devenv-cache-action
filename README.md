@@ -49,8 +49,14 @@ Pin to a 40-character commit SHA for production workflows.
 The action restores the cache immediately, then registers two post callbacks in order:
 
 1. The `actions/cache` step (combined restore + save) registers a success-gated post-save.
-2. A private nested JavaScript child (`$/post-snapshot`) registers a success-gated
-   post-snapshot finalizer.
+2. A private nested JavaScript child (`onsails/devenv-cache-action/post-snapshot@<sha>`)
+   registers a success-gated post-snapshot finalizer.
+
+   The child is referenced by an explicit `{org}/{repo}/{path}@{sha}` pin, so it appears in job
+   logs as a separate action. The shorter `$/post-snapshot` self-repository form is not used: it
+   needs a runner feature flag that is not on everywhere, and without it the post step fails
+   template validation. `./post-snapshot` is not usable either — a dot-slash reference would
+   resolve against your checkout, not this repository.
 
 GitHub Actions runs post steps of referenced actions in **reverse registration order**, so the
 finalizer's post runs first — it creates the validated SQLite snapshot in the staging directory —
@@ -135,7 +141,7 @@ Removed in v2: `extra-paths` (it was exactly the footgun that caused this bug �
 live mutable state to the archiver) and the `save` boolean input.
 
 Removed in v2.1: the `mode` input (`restore`/`save`). The single call now owns both restore and the
-success-gated snapshot+save sequence via the nested `$/post-snapshot` finalizer.
+success-gated snapshot+save sequence via the nested `post-snapshot` finalizer.
 ## Integrity gates and recovery
 
 

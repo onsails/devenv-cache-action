@@ -167,9 +167,21 @@ runs:
     # --- snapshot finalizer: registers a success-gated post callback that creates the
     #     validated SQLite snapshot after job work completes. Registered AFTER the cache
     #     step, so its post runs FIRST (reverse order), before the cache post-save archives
-    #     the staging directory. The $/ self-repository reference resolves to
-    #     onsails/devenv-cache-action at the same commit as this outer action. ---
-    - uses: $/post-snapshot
+    #     the staging directory.
+    #
+    #     The reference below MUST stay an explicit {org}/{repo}/{path}@{sha} pin to this
+    #     same repository. The shorter `uses: $/post-snapshot` self-repository form exists
+    #     (actions/runner#4457) but is gated behind the `actions_dollar_self_reference`
+    #     feature flag; runners without the flag fail template validation with
+    #     "Expected format {org}/{repo}[/path]@ref". Switch to `$/post-snapshot` only after
+    #     that flag is on by default for every runner, self-hosted included.
+    #
+    #     `./post-snapshot` is NOT an option: a dot-slash reference resolves against the
+    #     CALLER's checkout, not this repository.
+    #
+    #     The pin lags one commit whenever post-snapshot/ changes. tests/check-post-snapshot-pin.sh
+    #     enforces that it points at the current post-snapshot/ tree; see AGENTS.md.
+    - uses: onsails/devenv-cache-action/post-snapshot@acbfc4adbcc40bdfd9b50fc2418b8fab926da907 # v3.0.0
       if: ${{ inputs.cache-eval == 'true' || inputs.cache-nix-eval == 'true' }}
       with:
         working-directory: ${{ inputs.working-directory }}

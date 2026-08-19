@@ -6,6 +6,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Fast structural gate: action.yml must pin post-snapshot/ to a SHA whose tree matches
+  # HEAD. A stale pin ships the old finalizer to consumers while every job below still
+  # exercises the new code, so this failure is invisible to the functional tests.
+  post-snapshot-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - run: ./tests/check-post-snapshot-pin.sh
+
   seed:
     runs-on: ubuntu-latest
     steps:
