@@ -26,7 +26,7 @@ archives it.
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: cachix/install-nix-action@v31.11.0
+- uses: cachix/install-nix-action@v31.11.1
 - uses: cachix/cachix-action@v17
   with:
     name: devenv
