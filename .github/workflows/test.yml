@@ -29,7 +29,10 @@ jobs:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      # sqlite3 is preinstalled on the ubuntu runner image. Assert it instead of running
+      # apt-get: an `apt-get update` against a stalled Azure mirror hangs the job until the
+      # 6-hour timeout, and it only reinstalls a package that is already there.
+      - run: sqlite3 --version
 
       # One call: restores at main (miss expected on seed), registers a success-gated
       # post-snapshot finalizer that runs before the cache post-save.
@@ -96,7 +99,10 @@ jobs:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      # sqlite3 is preinstalled on the ubuntu runner image. Assert it instead of running
+      # apt-get: an `apt-get update` against a stalled Azure mirror hangs the job until the
+      # 6-hour timeout, and it only reinstalls a package that is already there.
+      - run: sqlite3 --version
 
       - name: Restore devenv eval cache (exact hit expected)
         id: cache
@@ -149,7 +155,10 @@ jobs:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      # sqlite3 is preinstalled on the ubuntu runner image. Assert it instead of running
+      # apt-get: an `apt-get update` against a stalled Azure mirror hangs the job until the
+      # 6-hour timeout, and it only reinstalls a package that is already there.
+      - run: sqlite3 --version
 
       - name: Restore devenv eval cache (exact hit expected)
         id: cache
@@ -203,7 +212,10 @@ jobs:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      # sqlite3 is preinstalled on the ubuntu runner image. Assert it instead of running
+      # apt-get: an `apt-get update` against a stalled Azure mirror hangs the job until the
+      # 6-hour timeout, and it only reinstalls a package that is already there.
+      - run: sqlite3 --version
       - name: Initialize snapshot-only comparison cache
         id: cache
         uses: ./
@@ -245,7 +257,10 @@ jobs:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      # sqlite3 is preinstalled on the ubuntu runner image. Assert it instead of running
+      # apt-get: an `apt-get update` against a stalled Azure mirror hangs the job until the
+      # 6-hour timeout, and it only reinstalls a package that is already there.
+      - run: sqlite3 --version
       - name: Restore snapshot-only comparison cache
         id: cache
         uses: ./
@@ -289,7 +304,10 @@ jobs:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      # sqlite3 is preinstalled on the ubuntu runner image. Assert it instead of running
+      # apt-get: an `apt-get update` against a stalled Azure mirror hangs the job until the
+      # 6-hour timeout, and it only reinstalls a package that is already there.
+      - run: sqlite3 --version
       - name: Initialize bounded-Nix-eval comparison cache
         id: cache
         uses: ./
@@ -334,7 +352,10 @@ jobs:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      # sqlite3 is preinstalled on the ubuntu runner image. Assert it instead of running
+      # apt-get: an `apt-get update` against a stalled Azure mirror hangs the job until the
+      # 6-hour timeout, and it only reinstalls a package that is already there.
+      - run: sqlite3 --version
       - name: Restore bounded-Nix-eval comparison cache
         id: cache
         uses: ./
@@ -380,7 +401,10 @@ jobs:
           name: devenv
           skipPush: true
       - run: nix profile add nixpkgs#devenv
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3
+      # sqlite3 is preinstalled on the ubuntu runner image. Assert it instead of running
+      # apt-get: an `apt-get update` against a stalled Azure mirror hangs the job until the
+      # 6-hour timeout, and it only reinstalls a package that is already there.
+      - run: sqlite3 --version
 
       - name: Assert Nix eval restore replaces stale WAL and SHM sidecars
         shell: bash
