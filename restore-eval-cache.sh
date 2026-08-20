@@ -61,10 +61,15 @@ store_references_valid() {
       | sed 's#^#/nix/store/#' || true
   } | sort -u >"${refs}"
   rm -f "${text}"
-  grep -E '\.drv$' "${refs}" >"${drvs}" || true
+  : >"${drvs}"
 
   if [ -s "${refs}" ]; then
     hydrate_store_paths "${refs}"
+    while IFS= read -r path; do
+      case "${path}" in
+        *.drv) nix-store --check-validity "${path}" >/dev/null 2>&1 && printf '%s\n' "${path}" >>"${drvs}" ;;
+      esac
+    done <"${refs}"
   fi
   if [ -s "${drvs}" ] \
     && { ! xargs -r -n 128 nix-store --query --requisites <"${drvs}" >"${closure}" 2>/dev/null \
