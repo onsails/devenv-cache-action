@@ -79,7 +79,7 @@ jobs:
           sqlite3 "$genuine_nix_db" 'PRAGMA quick_check;' | grep -qx ok
 
           mkdir -p "$HOME/.cache/nix/eval-cache-v6"
-          sqlite3 "$HOME/.cache/nix/eval-cache-v6/self-test.sqlite" 'CREATE TABLE IF NOT EXISTS seeded(value TEXT); INSERT INTO seeded VALUES ("seed");'
+          sqlite3 "$HOME/.cache/nix/eval-cache-v6/self-test.sqlite" 'CREATE TABLE IF NOT EXISTS Attributes(parent INTEGER, name TEXT, type INTEGER, value TEXT, context TEXT); INSERT INTO Attributes(value) VALUES ("seed");'
           sqlite3 "$HOME/.cache/nix/eval-cache-v6/self-test.sqlite" 'PRAGMA quick_check;' | grep -qx ok
 
   # warm-1 proves the post-snapshot finalizer created the seed snapshot before the cache post-save
@@ -130,7 +130,7 @@ jobs:
           self_test="$HOME/.cache/nix/eval-cache-v6/self-test.sqlite"
           [ -f "$self_test" ] || { echo "seeded self-test.sqlite was not restored"; exit 1; }
           sqlite3 "$self_test" 'PRAGMA quick_check;' | grep -qx ok
-          [ "$(sqlite3 "$self_test" 'SELECT value FROM seeded;')" = seed ] \
+          [ "$(sqlite3 "$self_test" 'SELECT value FROM Attributes WHERE value = "seed";')" = seed ] \
             || { echo "restored self-test.sqlite does not contain the seeded row"; exit 1; }
 
       - name: Time real devenv shell (reuses restored eval cache)
@@ -186,7 +186,7 @@ jobs:
           self_test="$HOME/.cache/nix/eval-cache-v6/self-test.sqlite"
           [ -f "$self_test" ] || { echo "seeded self-test.sqlite was not restored"; exit 1; }
           sqlite3 "$self_test" 'PRAGMA quick_check;' | grep -qx ok
-          [ "$(sqlite3 "$self_test" 'SELECT value FROM seeded;')" = seed ] \
+          [ "$(sqlite3 "$self_test" 'SELECT value FROM Attributes WHERE value = "seed";')" = seed ] \
             || { echo "restored self-test.sqlite does not contain the seeded row"; exit 1; }
 
       - name: Time real devenv shell (reuses restored eval cache)
