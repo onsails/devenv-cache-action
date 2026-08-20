@@ -148,9 +148,9 @@ success-gated snapshot+save sequence via the nested `post-snapshot` finalizer.
 - **Write:** every DB is created with SQLite's online `.backup`, then `PRAGMA quick_check` must
   return `ok`; manifest v2 is atomically published with `key`, `devenvVersion`, and per-file
   `{name, sha256, bytes}` records.
-- **Read:** schema/key/version, filename, size, SHA-256, `quick_check`, and every embedded Nix store
-  closure are validated before install. Invalid entries are cache misses and are skipped rather than
-  failing the job. Only validated snapshots are copied; WAL/SHM files are never copied.
+- **Read:** schema/key/version, filename, size, SHA-256, `quick_check`, and embedded derivation
+  closures are validated before install. Exact missing store objects are fetched from configured
+  substituters without builds. Invalid entries become cache misses; valid peers still restore.
 - **Recovery:** a cache entry is immutable and first-writer-wins. A corrupted snapshot is ignored
   and the job evaluates normally; rotate the key with `key-suffix` to force a fresh entry.
 

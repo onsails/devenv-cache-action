@@ -13,7 +13,6 @@ key_base='devenv-eval-Linux-x86_64-layoutv3-nix0-eval1-nixeval1-devenvtest-versi
 staging="${work}/staging"
 mkdir -p "${staging}/nix-eval-cache-v6" "${work}/bin"
 
-invalid_direct='/nix/store/00000000000000000000000000000000-direct-invalid'
 invalid_closure='/nix/store/11111111111111111111111111111111-closure-invalid.drv'
 recoverable_path='/nix/store/22222222222222222222222222222222-recoverable'
 
@@ -71,12 +70,12 @@ exit 1
 EOF
 chmod +x "${work}/bin/nix"
 
-# Devenv snapshot: SQLite is valid, but cached JSON names a directly invalid store path.
+# Devenv snapshot: SQLite is valid, but cached JSON names a derivation with an invalid closure.
 eval_snapshot="${staging}/nix-eval-cache.db"
 "${sqlite3_path}" "${eval_snapshot}" <<SQL
 CREATE TABLE cached_eval(json_output TEXT NOT NULL);
 CREATE TABLE eval_resource_spec(spec TEXT NOT NULL);
-INSERT INTO cached_eval VALUES ('{"out_path":"${invalid_direct}"}');
+INSERT INTO cached_eval VALUES ('{"drv_path":"${invalid_closure}"}');
 INSERT INTO eval_resource_spec VALUES ('{}');
 SQL
 

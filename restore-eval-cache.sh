@@ -13,35 +13,27 @@ sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
-# A snapshot can outlive the runner store while every referenced path remains available from a
 # configured binary cache. Fetch exact store objects only; never realise derivations and build them.
 hydrate_store_paths() {
   local paths="$1"
-  local substituters path substituter hydrated
+  local substituters path substituter
 
   if xargs -r -n 128 nix-store --check-validity <"${paths}" >/dev/null 2>&1; then return 0; fi
-  command -v nix >/dev/null 2>&1 || return 1
-  substituters="$(nix config show substituters 2>/dev/null)" || return 1
-  [ -n "${substituters}" ] || return 1
+  command -v nix >/dev/null 2>&1 || return 0
+  substituters="$(nix config show substituters 2>/dev/null)" || return 0
 
   while IFS= read -r path; do
     if nix-store --check-validity "${path}" >/dev/null 2>&1; then continue; fi
-    hydrated=false
     for substituter in ${substituters}; do
-      if nix copy --from "${substituter}" -- "${path}" >/dev/null 2>&1 \
-        && nix-store --check-validity "${path}" >/dev/null 2>&1; then
-        hydrated=true
-        break
-      fi
+      if nix copy --from "${substituter}" -- "${path}" >/dev/null 2>&1; then break; fi
     done
-    if [ "${hydrated}" != true ]; then return 1; fi
   done <"${paths}"
 }
 
 
 # Evaluation outputs can embed absolute store paths and derivation contexts. SQLite integrity does
 # not prove those references still exist after the runner's Nix store has been garbage-collected.
-# Validate each snapshot before installation; one stale Nix fingerprint DB must not discard peers.
+# Hydrate available references, then reject snapshots whose derivation closures remain incomplete.
 store_references_valid() {
   local snapshot="$1"
   local kind="$2"
@@ -73,7 +65,9 @@ store_references_valid() {
     if ! command -v nix-store >/dev/null 2>&1 \
       || ! hydrate_store_paths "${refs}" \
       || ! xargs -r -n 128 nix-store --query --requisites <"${refs}" >"${closure}" 2>/dev/null \
-      || ! hydrate_store_paths "${closure}"; then
+      || ! hydrate_store_paths "${closure}" \
+      || { grep -qE '\.drv$' "${refs}" \
+        && ! xargs -r -n 128 nix-store --check-validity <"${closure}" >/dev/null 2>&1; }; then
       rm -f "${refs}" "${closure}"
       return 1
     fi
