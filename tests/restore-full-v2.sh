@@ -15,18 +15,21 @@ staging="${work}/staging"
 mkdir -p "${staging}/nix-eval-cache-v6"
 
 eval_snapshot="${staging}/nix-eval-cache.db"
-"${sqlite3_path}" "${eval_snapshot}" "CREATE TABLE eval(value TEXT); INSERT INTO eval VALUES ('devenv');"
+"${sqlite3_path}" "${eval_snapshot}" \
+  "CREATE TABLE cached_eval(json_output TEXT NOT NULL); CREATE TABLE eval_resource_spec(spec TEXT NOT NULL); INSERT INTO cached_eval VALUES ('devenv');"
 eval_sha="$(sha256sum "${eval_snapshot}" | cut -d' ' -f1)"
 eval_bytes="$(wc -c < "${eval_snapshot}" | tr -d ' ')"
 
 # Create two Nix eval DBs
 nix1="${staging}/nix-eval-cache-v6/abc123.sqlite"
-"${sqlite3_path}" "${nix1}" "CREATE TABLE n1(value TEXT); INSERT INTO n1 VALUES ('one');"
+"${sqlite3_path}" "${nix1}" \
+  "CREATE TABLE Attributes(value TEXT, context TEXT); INSERT INTO Attributes VALUES ('one', NULL);"
 nix1_sha="$(sha256sum "${nix1}" | cut -d' ' -f1)"
 nix1_bytes="$(wc -c < "${nix1}" | tr -d ' ')"
 
 nix2="${staging}/nix-eval-cache-v6/self-test.sqlite"
-"${sqlite3_path}" "${nix2}" "CREATE TABLE seeded(value TEXT); INSERT INTO seeded VALUES ('seed');"
+"${sqlite3_path}" "${nix2}" \
+  "CREATE TABLE Attributes(value TEXT, context TEXT); INSERT INTO Attributes VALUES ('seed', NULL);"
 nix2_sha="$(sha256sum "${nix2}" | cut -d' ' -f1)"
 nix2_bytes="$(wc -c < "${nix2}" | tr -d ' ')"
 

@@ -21,7 +21,7 @@ staging="${work}/staging"
 mkdir -p "${staging}/nix-eval-cache-v6"
 snapshot="${staging}/nix-eval-cache-v6/${name}"
 "${sqlite3_path}" "${snapshot}" \
-  "CREATE TABLE snapshot_marker(value TEXT); INSERT INTO snapshot_marker VALUES ('from-snapshot');"
+  "CREATE TABLE Attributes(value TEXT, context TEXT); INSERT INTO Attributes VALUES ('from-snapshot', NULL);"
 sha="$(sha256sum "${snapshot}" | cut -d' ' -f1)"
 bytes="$(wc -c < "${snapshot}" | tr -d ' ')"
 printf '{"schema":1,"manifestFormat":2,"key":"%s","devenvVersion":"test-version","evalDb":null,"nixEvalFiles":[{"name":"%s","sha256":"%s","bytes":%s}]}' \
@@ -60,7 +60,7 @@ grep -qx 'nix-eval-files-restored=1' "${output}" || fail 'expected nix-eval-file
 
 [ "$("${sqlite3_path}" "${destination}" 'PRAGMA quick_check;' | tr -d '\n')" = ok ] \
   || fail 'restored DB failed quick_check'
-[ "$("${sqlite3_path}" "${destination}" 'SELECT value FROM snapshot_marker;')" = 'from-snapshot' ] \
+[ "$("${sqlite3_path}" "${destination}" 'SELECT value FROM Attributes;')" = 'from-snapshot' ] \
   || fail 'restored DB is not the staged snapshot'
 "${sqlite3_path}" "${destination}" 'SELECT name FROM sqlite_master;' | grep -qx live_marker \
   && fail 'restored DB still exposes the replaced live database'

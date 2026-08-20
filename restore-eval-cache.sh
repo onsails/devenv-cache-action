@@ -14,6 +14,48 @@ sha256_file() {
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
+# Evaluation outputs can embed absolute store paths and derivation contexts. SQLite integrity does
+# not prove those references still exist after the runner's Nix store has been garbage-collected.
+# Validate each snapshot before installation; one stale Nix fingerprint DB must not discard peers.
+store_references_valid() {
+  local snapshot="$1"
+  local kind="$2"
+  local text refs closure query
+  text="$(mktemp)"
+  refs="$(mktemp)"
+  closure="$(mktemp)"
+
+  if [ "${kind}" = E ]; then
+    query='SELECT json_output FROM cached_eval UNION ALL SELECT spec FROM eval_resource_spec;'
+  else
+    query='SELECT value FROM Attributes WHERE value IS NOT NULL UNION ALL SELECT context FROM Attributes WHERE context IS NOT NULL;'
+  fi
+
+  if ! "${SQLITE3_PATH}" "${snapshot}" "${query}" >"${text}" 2>/dev/null; then
+    rm -f "${text}" "${refs}" "${closure}"
+    return 1
+  fi
+
+  {
+    grep -oE '/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+' "${text}" || true
+    # Nix string contexts encode derivations as =hash-name.drv or !output!hash-name.drv.
+    grep -oE '[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+\.drv' "${text}" \
+      | sed 's#^#/nix/store/#' || true
+  } | sort -u >"${refs}"
+  rm -f "${text}"
+
+  if [ -s "${refs}" ]; then
+    if ! command -v nix-store >/dev/null 2>&1 \
+      || ! xargs -r -n 128 nix-store --check-validity <"${refs}" >/dev/null 2>&1 \
+      || ! xargs -r -n 128 nix-store --query --requisites <"${refs}" >"${closure}" 2>/dev/null \
+      || ! xargs -r -n 128 nix-store --check-validity <"${closure}" >/dev/null 2>&1; then
+      rm -f "${refs}" "${closure}"
+      return 1
+    fi
+  fi
+  rm -f "${refs}" "${closure}"
+}
+
 emit 'eval-cache-restored=false'
 emit 'nix-eval-cache-restored=false'
 emit 'nix-eval-files-restored=0'
@@ -132,6 +174,10 @@ while IFS=$'\t' read -r kind name declared_sha declared_bytes; do
     [ "$(sha256_file "${snapshot}")" = "${declared_sha}" ] || continue
     check="$("${SQLITE3_PATH}" "${snapshot}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
     [ "${check}" = ok ] || continue
+    if ! store_references_valid "${snapshot}" E; then
+      echo 'devenv-cache-action: skipping devenv eval DB; cached Nix store closure is invalid' >&2
+      continue
+    fi
     mkdir -p "$(dirname "${LIVE_DB}")"
     rm -f "${LIVE_DB}" "${LIVE_DB}-wal" "${LIVE_DB}-shm"
     cp "${snapshot}" "${LIVE_DB}"
@@ -147,6 +193,10 @@ while IFS=$'\t' read -r kind name declared_sha declared_bytes; do
     [ "$(sha256_file "${snapshot}")" = "${declared_sha}" ] || continue
     check="$("${SQLITE3_PATH}" "${snapshot}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
     [ "${check}" = ok ] || continue
+    if ! store_references_valid "${snapshot}" N; then
+      echo "devenv-cache-action: skipping ${name}; cached Nix store closure is invalid" >&2
+      continue
+    fi
     destination="${HOME}/.cache/nix/eval-cache-v6/${name}"
     mkdir -p "$(dirname "${destination}")"
     # A staged online backup is the only source. Replace the DB and every stale live sidecar

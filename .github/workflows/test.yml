@@ -410,6 +410,10 @@ jobs:
         shell: bash
         run: tests/restore-stale-wal.sh
 
+      - name: Reject eval snapshots with stale Nix store closures
+        shell: bash
+        run: tests/restore-stale-store-reference.sh
+
       - name: Assert zero-match hard error
         id: cache
         continue-on-error: true
