@@ -37,9 +37,10 @@ hydrate_store_paths() {
 store_references_valid() {
   local snapshot="$1"
   local kind="$2"
-  local text refs closure query
+  local text refs drvs closure query
   text="$(mktemp)"
   refs="$(mktemp)"
+  drvs="$(mktemp)"
   closure="$(mktemp)"
 
   if [ "${kind}" = E ]; then
@@ -49,7 +50,7 @@ store_references_valid() {
   fi
 
   if ! "${SQLITE3_PATH}" "${snapshot}" "${query}" >"${text}" 2>/dev/null; then
-    rm -f "${text}" "${refs}" "${closure}"
+    rm -f "${text}" "${refs}" "${drvs}" "${closure}"
     return 1
   fi
 
@@ -60,19 +61,19 @@ store_references_valid() {
       | sed 's#^#/nix/store/#' || true
   } | sort -u >"${refs}"
   rm -f "${text}"
+  grep -E '\.drv$' "${refs}" >"${drvs}" || true
 
   if [ -s "${refs}" ]; then
-    if ! command -v nix-store >/dev/null 2>&1 \
-      || ! hydrate_store_paths "${refs}" \
-      || ! xargs -r -n 128 nix-store --query --requisites <"${refs}" >"${closure}" 2>/dev/null \
-      || ! hydrate_store_paths "${closure}" \
-      || { grep -qE '\.drv$' "${refs}" \
-        && ! xargs -r -n 128 nix-store --check-validity <"${closure}" >/dev/null 2>&1; }; then
-      rm -f "${refs}" "${closure}"
-      return 1
-    fi
+    hydrate_store_paths "${refs}"
   fi
-  rm -f "${refs}" "${closure}"
+  if [ -s "${drvs}" ] \
+    && { ! xargs -r -n 128 nix-store --query --requisites <"${drvs}" >"${closure}" 2>/dev/null \
+      || ! hydrate_store_paths "${closure}" \
+      || ! xargs -r -n 128 nix-store --check-validity <"${closure}" >/dev/null 2>&1; }; then
+    rm -f "${refs}" "${drvs}" "${closure}"
+    return 1
+  fi
+  rm -f "${refs}" "${drvs}" "${closure}"
 }
 
 emit 'eval-cache-restored=false'
