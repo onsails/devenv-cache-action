@@ -15,10 +15,10 @@ mkdir -p "${staging}/nix-eval-cache-v6" "${work}/bin"
 
 invalid_direct='/nix/store/00000000000000000000000000000000-direct-invalid'
 invalid_closure='/nix/store/11111111111111111111111111111111-closure-invalid.drv'
-valid_path='/nix/store/22222222222222222222222222222222-valid'
+recoverable_path='/nix/store/22222222222222222222222222222222-recoverable'
 
-# The fake command distinguishes an invalid direct path from a valid root whose closure contains an
-# invalid requisite. Real `nix-store --query --requisites` can list an invalid path and still exit 0.
+# The fake commands distinguish invalid paths from one path available through a configured binary
+# cache. Real `nix-store --query --requisites` can list an invalid path and still exit 0.
 cat > "${work}/bin/nix-store" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -38,6 +38,8 @@ if [ "$1" = --check-validity ]; then
     case "$path" in
       '/nix/store/00000000000000000000000000000000-direct-invalid'|\
       '/nix/store/33333333333333333333333333333333-missing-requisite.patch') exit 1 ;;
+      '/nix/store/22222222222222222222222222222222-recoverable')
+        grep -qxF "$path" "${MOCK_VALID_PATHS}" 2>/dev/null || exit 1 ;;
     esac
   done
   exit 0
@@ -45,6 +47,29 @@ fi
 exit 1
 EOF
 chmod +x "${work}/bin/nix-store"
+cat > "${work}/bin/nix" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = config ] && [ "$2" = show ] && [ "$3" = substituters ]; then
+  echo 'mock://binary-cache'
+  exit 0
+fi
+if [ "$1" = copy ] && [ "$2" = --from ] && [ "$3" = 'mock://binary-cache' ]; then
+  shift 3
+  [ "${1:-}" != -- ] || shift
+  status=0
+  for path in "$@"; do
+    if [ "$path" = '/nix/store/22222222222222222222222222222222-recoverable' ]; then
+      printf '%s\n' "$path" >> "${MOCK_VALID_PATHS}"
+    else
+      status=1
+    fi
+  done
+  exit "$status"
+fi
+exit 1
+EOF
+chmod +x "${work}/bin/nix"
 
 # Devenv snapshot: SQLite is valid, but cached JSON names a directly invalid store path.
 eval_snapshot="${staging}/nix-eval-cache.db"
@@ -55,7 +80,7 @@ INSERT INTO cached_eval VALUES ('{"out_path":"${invalid_direct}"}');
 INSERT INTO eval_resource_spec VALUES ('{}');
 SQL
 
-# First Nix DB: its derivation exists, but querying its closure fails. Second DB is valid.
+# First Nix DB has an invalid closure. Second DB becomes valid after binary-cache hydration.
 stale_nix="${staging}/nix-eval-cache-v6/stale.sqlite"
 "${sqlite3_path}" "${stale_nix}" <<SQL
 CREATE TABLE Attributes(value TEXT, context TEXT);
@@ -64,7 +89,7 @@ SQL
 valid_nix="${staging}/nix-eval-cache-v6/valid.sqlite"
 "${sqlite3_path}" "${valid_nix}" <<SQL
 CREATE TABLE Attributes(value TEXT, context TEXT);
-INSERT INTO Attributes VALUES ('${valid_path}', NULL);
+INSERT INTO Attributes VALUES ('${recoverable_path}', NULL);
 SQL
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
@@ -79,6 +104,8 @@ live_db="${work}/checkout/.devenv/nix-eval-cache.db"
 output="${work}/github-output"
 mkdir -p "${home}"
 : > "${output}"
+mock_valid_paths="${work}/valid-paths"
+: > "${mock_valid_paths}"
 
 PATH="${work}/bin:${PATH}" \
 HOME="${home}" \
@@ -90,6 +117,7 @@ EXPECTED_KEY="${key_base}" \
 DEVENV_VERSION='test-version' \
 CACHE_EVAL='true' \
 CACHE_NIX_EVAL='true' \
+MOCK_VALID_PATHS="${mock_valid_paths}" \
 GITHUB_OUTPUT="${output}" \
   bash "${root}/restore-eval-cache.sh"
 
@@ -101,5 +129,6 @@ grep -qx 'nix-eval-cache-restored=true' "${output}" || fail 'expected valid Nix 
 grep -qx 'nix-eval-files-restored=1' "${output}" || fail 'expected exactly one valid Nix DB'
 [ ! -e "${home}/.cache/nix/eval-cache-v6/stale.sqlite" ] || fail 'stale Nix DB was installed'
 [ -e "${home}/.cache/nix/eval-cache-v6/valid.sqlite" ] || fail 'valid Nix DB was not installed'
+grep -qxF "${recoverable_path}" "${mock_valid_paths}" || fail 'restorable path was not hydrated'
 
 echo 'restore-stale-store-reference: OK'

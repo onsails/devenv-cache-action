@@ -13,6 +13,31 @@ sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
+# A snapshot can outlive the runner store while every referenced path remains available from a
+# configured binary cache. Fetch exact store objects only; never realise derivations and build them.
+hydrate_store_paths() {
+  local paths="$1"
+  local substituters path substituter hydrated
+
+  if xargs -r -n 128 nix-store --check-validity <"${paths}" >/dev/null 2>&1; then return 0; fi
+  command -v nix >/dev/null 2>&1 || return 1
+  substituters="$(nix config show substituters 2>/dev/null)" || return 1
+  [ -n "${substituters}" ] || return 1
+
+  while IFS= read -r path; do
+    if nix-store --check-validity "${path}" >/dev/null 2>&1; then continue; fi
+    hydrated=false
+    for substituter in ${substituters}; do
+      if nix copy --from "${substituter}" -- "${path}" >/dev/null 2>&1 \
+        && nix-store --check-validity "${path}" >/dev/null 2>&1; then
+        hydrated=true
+        break
+      fi
+    done
+    if [ "${hydrated}" != true ]; then return 1; fi
+  done <"${paths}"
+}
+
 
 # Evaluation outputs can embed absolute store paths and derivation contexts. SQLite integrity does
 # not prove those references still exist after the runner's Nix store has been garbage-collected.
@@ -46,9 +71,9 @@ store_references_valid() {
 
   if [ -s "${refs}" ]; then
     if ! command -v nix-store >/dev/null 2>&1 \
-      || ! xargs -r -n 128 nix-store --check-validity <"${refs}" >/dev/null 2>&1 \
+      || ! hydrate_store_paths "${refs}" \
       || ! xargs -r -n 128 nix-store --query --requisites <"${refs}" >"${closure}" 2>/dev/null \
-      || ! xargs -r -n 128 nix-store --check-validity <"${closure}" >/dev/null 2>&1; then
+      || ! hydrate_store_paths "${closure}"; then
       rm -f "${refs}" "${closure}"
       return 1
     fi
