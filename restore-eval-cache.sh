@@ -13,72 +13,106 @@ sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
-# configured binary cache. Fetch exact store objects only; never realise derivations and build them.
-hydrate_store_paths() {
-  local paths="$1"
-  local substituters path substituter
-
-  if xargs -r -n 128 nix-store --check-validity <"${paths}" >/dev/null 2>&1; then return 0; fi
-  command -v nix >/dev/null 2>&1 || return 0
-  substituters="$(nix config show substituters 2>/dev/null)" || return 0
-
-  while IFS= read -r path; do
-    if nix-store --check-validity "${path}" >/dev/null 2>&1; then continue; fi
-    for substituter in ${substituters}; do
-      if nix copy --from "${substituter}" -- "${path}" >/dev/null 2>&1; then break; fi
-    done
-  done <"${paths}"
-}
-
-
-# Evaluation outputs can embed absolute store paths and derivation contexts. SQLite integrity does
-# not prove those references still exist after the runner's Nix store has been garbage-collected.
-# Hydrate available references, then reject snapshots whose derivation closures remain incomplete.
+# Evaluation outputs can embed absolute store paths and typed Nix string contexts. Validate every
+# staged candidate against the local store before replacing any live database.
 store_references_valid() {
-  local snapshot="$1"
-  local kind="$2"
-  local text refs drvs closure query
-  text="$(mktemp)"
-  refs="$(mktemp)"
-  drvs="$(mktemp)"
-  closure="$(mktemp)"
+  local snapshot="$1" kind="$2"
+  local work text contexts refs drvs closure closure_sorted context token suffix status
+  local saw_output_prefix
+  local store_hash='[0123456789abcdfghijklmnpqrsvwxyz]{32}'
+  local store_name='[A-Za-z0-9+._?=-]+'
+  local store_path_re="/nix/store/${store_hash}-${store_name}"
+  local store_basename_re="${store_hash}-${store_name}"
+
+  command -v nix-store >/dev/null 2>&1 || return 1
+  work="$(mktemp -d)" || return 1
+  text="${work}/text"; contexts="${work}/contexts"; refs="${work}/refs"
+  drvs="${work}/drvs"; closure="${work}/closure"; closure_sorted="${work}/closure-sorted"
 
   if [ "${kind}" = E ]; then
-    query='SELECT json_output FROM cached_eval UNION ALL SELECT spec FROM eval_resource_spec;'
+    if ! "${SQLITE3_PATH}" "${snapshot}" \
+      'SELECT json_output FROM cached_eval UNION ALL SELECT spec FROM eval_resource_spec;' \
+      >"${text}" 2>/dev/null; then
+      rm -rf "${work}"; return 1
+    fi
+    : >"${contexts}"
+  elif [ "${kind}" = N ]; then
+    if ! "${SQLITE3_PATH}" "${snapshot}" \
+      'SELECT value FROM Attributes WHERE value IS NOT NULL;' >"${text}" 2>/dev/null \
+      || ! "${SQLITE3_PATH}" "${snapshot}" \
+        'SELECT context FROM Attributes WHERE context IS NOT NULL;' >"${contexts}" 2>/dev/null; then
+      rm -rf "${work}"; return 1
+    fi
   else
-    query='SELECT value FROM Attributes WHERE value IS NOT NULL UNION ALL SELECT context FROM Attributes WHERE context IS NOT NULL;'
+    rm -rf "${work}"; return 1
   fi
 
-  if ! "${SQLITE3_PATH}" "${snapshot}" "${query}" >"${text}" 2>/dev/null; then
-    rm -f "${text}" "${refs}" "${drvs}" "${closure}"
-    return 1
-  fi
+  status=0
+  grep -oE "${store_path_re}" "${text}" >"${refs}" || status=$?
+  [ "${status}" -le 1 ] || { rm -rf "${work}"; return 1; }
+  while IFS= read -r context || [ -n "${context}" ]; do
+    read -r -a context_tokens <<<"${context}"
+    for token in "${context_tokens[@]}"; do
+      suffix="${token}"
+      saw_output_prefix=false
+      while [[ "${suffix}" =~ ^!([A-Za-z0-9+._?=-]+)!(.*)$ ]]; do
+        saw_output_prefix=true
+        suffix="${BASH_REMATCH[2]}"
+      done
+      if [ "${saw_output_prefix}" = true ]; then
+        [[ "${suffix}" =~ ^${store_basename_re}\.drv$ ]] \
+          || { rm -rf "${work}"; return 1; }
+        printf '/nix/store/%s\n' "${suffix}" >>"${refs}"
+      elif [[ "${suffix}" =~ ^${store_path_re}$ ]]; then
+        printf '%s\n' "${suffix}" >>"${refs}"
+      elif [[ "${suffix}" =~ ^=(${store_basename_re}\.drv)$ ]]; then
+        printf '/nix/store/%s\n' "${BASH_REMATCH[1]}" >>"${refs}"
+      elif [[ "${suffix}" =~ ^@(${store_basename_re})$ ]]; then
+        printf '/nix/store/%s\n' "${BASH_REMATCH[1]}" >>"${refs}"
+      else
+        rm -rf "${work}"; return 1
+      fi
+    done
+  done <"${contexts}"
 
-  {
-    grep -oE '/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+' "${text}" || true
-    # Nix string contexts encode derivations as =hash-name.drv or !output!hash-name.drv.
-    grep -oE '[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+\.drv' "${text}" \
-      | sed 's#^#/nix/store/#' || true
-  } | sort -u >"${refs}"
-  rm -f "${text}"
-  : >"${drvs}"
+  sort -u -o "${refs}" "${refs}" || { rm -rf "${work}"; return 1; }
+  if [ -s "${refs}" ] \
+    && ! xargs -n 128 nix-store --check-validity <"${refs}" >/dev/null 2>&1; then
+    rm -rf "${work}"; return 1
+  fi
+  status=0
+  grep -E '\.drv$' "${refs}" >"${drvs}" || status=$?
+  if [ "${status}" -gt 1 ]; then rm -rf "${work}"; return 1; fi
+  if [ -s "${drvs}" ]; then
+    if ! xargs -n 128 nix-store --query --requisites <"${drvs}" >"${closure}" 2>/dev/null \
+      || [ ! -s "${closure}" ] \
+      || grep -Eqv "^${store_path_re}$" "${closure}" \
+      || ! sort -u "${closure}" >"${closure_sorted}" \
+      || [ -n "$(comm -23 "${drvs}" "${closure_sorted}")" ] \
+      || ! xargs -n 128 nix-store --check-validity <"${closure_sorted}" >/dev/null 2>&1; then
+      rm -rf "${work}"; return 1
+    fi
+  fi
+  rm -rf "${work}"
+}
 
-  if [ -s "${refs}" ]; then
-    hydrate_store_paths "${refs}"
-    while IFS= read -r path; do
-      case "${path}" in
-        *.drv) nix-store --check-validity "${path}" >/dev/null 2>&1 && printf '%s\n' "${path}" >>"${drvs}" ;;
-      esac
-    done <"${refs}"
+sqlite_valid() {
+  local check
+  check="$("${SQLITE3_PATH}" "$1" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')" || return 1
+  [ "${check}" = ok ]
+}
+
+install_snapshot() {
+  local snapshot="$1" destination="$2" install_tmp
+  mkdir -p "$(dirname "${destination}")" || return 1
+  install_tmp="$(mktemp "${destination}.restore.XXXXXX")" || return 1
+  if ! cp "${snapshot}" "${install_tmp}" || ! sqlite_valid "${install_tmp}"; then
+    rm -f "${install_tmp}"; return 1
   fi
-  if [ -s "${drvs}" ] \
-    && { ! xargs -r -n 128 nix-store --query --requisites <"${drvs}" >"${closure}" 2>/dev/null \
-      || ! hydrate_store_paths "${closure}" \
-      || ! xargs -r -n 128 nix-store --check-validity <"${closure}" >/dev/null 2>&1; }; then
-    rm -f "${refs}" "${drvs}" "${closure}"
-    return 1
+  if ! rm -f "${destination}-wal" "${destination}-shm"; then
+    rm -f "${install_tmp}"; return 1
   fi
-  rm -f "${refs}" "${drvs}" "${closure}"
+  mv -f "${install_tmp}" "${destination}"
 }
 
 emit 'eval-cache-restored=false'
@@ -197,17 +231,15 @@ while IFS=$'\t' read -r kind name declared_sha declared_bytes; do
     [ -f "${snapshot}" ] || continue
     [ "$(wc -c < "${snapshot}" | tr -d ' ')" = "${declared_bytes}" ] || continue
     [ "$(sha256_file "${snapshot}")" = "${declared_sha}" ] || continue
-    check="$("${SQLITE3_PATH}" "${snapshot}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
-    [ "${check}" = ok ] || continue
+    sqlite_valid "${snapshot}" || continue
     if ! store_references_valid "${snapshot}" E; then
       echo 'devenv-cache-action: skipping devenv eval DB; cached Nix store closure is invalid' >&2
       continue
     fi
-    mkdir -p "$(dirname "${LIVE_DB}")"
-    rm -f "${LIVE_DB}" "${LIVE_DB}-wal" "${LIVE_DB}-shm"
-    cp "${snapshot}" "${LIVE_DB}"
-    installed_check="$("${SQLITE3_PATH}" "${LIVE_DB}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
-    if [ "${installed_check}" != ok ]; then rm -f "${LIVE_DB}" "${LIVE_DB}-wal" "${LIVE_DB}-shm"; continue; fi
+    if ! install_snapshot "${snapshot}" "${LIVE_DB}"; then
+      echo 'devenv-cache-action: skipping devenv eval DB; installation failed' >&2
+      continue
+    fi
     emit 'eval-cache-restored=true'
     emit "eval-db-path=${LIVE_DB}"
     eval_restored=true
@@ -216,22 +248,14 @@ while IFS=$'\t' read -r kind name declared_sha declared_bytes; do
     [ -f "${snapshot}" ] || continue
     [ "$(wc -c < "${snapshot}" | tr -d ' ')" = "${declared_bytes}" ] || continue
     [ "$(sha256_file "${snapshot}")" = "${declared_sha}" ] || continue
-    check="$("${SQLITE3_PATH}" "${snapshot}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
-    [ "${check}" = ok ] || continue
+    sqlite_valid "${snapshot}" || continue
     if ! store_references_valid "${snapshot}" N; then
       echo "devenv-cache-action: skipping ${name}; cached Nix store closure is invalid" >&2
       continue
     fi
     destination="${HOME}/.cache/nix/eval-cache-v6/${name}"
-    mkdir -p "$(dirname "${destination}")"
-    # A staged online backup is the only source. Replace the DB and every stale live sidecar
-    # atomically from the restore operation's perspective; an existing WAL/SHM can otherwise
-    # make SQLite attach incompatible pages to the newly copied snapshot.
-    rm -f "${destination}" "${destination}-wal" "${destination}-shm"
-    cp "${snapshot}" "${destination}"
-    installed_check="$("${SQLITE3_PATH}" "${destination}" 'PRAGMA quick_check;' 2>/dev/null | tr -d '\n')"
-    if [ "${installed_check}" != ok ]; then
-      rm -f "${destination}" "${destination}-wal" "${destination}-shm"
+    if ! install_snapshot "${snapshot}" "${destination}"; then
+      echo "devenv-cache-action: skipping ${name}; installation failed" >&2
       continue
     fi
     restored=$((restored + 1))

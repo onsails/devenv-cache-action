@@ -414,6 +414,10 @@ jobs:
         shell: bash
         run: tests/restore-stale-store-reference.sh
 
+      - name: Validate fail-closed eval-cache context matrix
+        shell: bash
+        run: tests/restore-context-matrix.sh
+
       - name: Assert zero-match hard error
         id: cache
         continue-on-error: true
