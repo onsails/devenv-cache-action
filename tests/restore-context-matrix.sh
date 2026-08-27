@@ -69,15 +69,12 @@ if [ "$1" = show-config ] && [ "$2" = substituters ]; then
 fi
 if [ "$1" = copy ] && [ "$2" = --from ]; then
   case "${MOCK_MODE}" in hydrate|hydrate-legacy|hydrate-validity-fail) ;; *) exit 1 ;; esac
-  from="$3"
-  [ "${from}" = file:///tmp/test-substituter ] || exit 1
-  shift 3
-  for path in "$@"; do
-    [ "$path" = -- ] && continue
-    [ "$path" = '/nix/store/66666666666666666666666666666666-recoverable' ] || exit 1
-    printf 'hydrated\t%s\t%s\n' "${from}" "${path}" >>"${MOCK_LOG}"
-    [ "${MOCK_MODE}" = hydrate-validity-fail ] || printf '%s\n' "${path}" >>"${MOCK_HYDRATE_STATE}"
-  done
+  [ "$3" = file:///tmp/test-substituter ] || exit 1
+  [ "$4" = -- ] || exit 1
+  [ "$5" = '/nix/store/66666666666666666666666666666666-recoverable' ] || exit 1
+  [ "$#" -eq 5 ] || exit 1
+  printf 'hydrated\t%s\t%s\n' "$3" "$5" >>"${MOCK_LOG}"
+  [ "${MOCK_MODE}" = hydrate-validity-fail ] || printf '%s\n' "$5" >>"${MOCK_HYDRATE_STATE}"
   exit 0
 fi
 exit 1
@@ -179,6 +176,7 @@ run_case context-opaque N fixture "${opaque}" accept
 run_case context-drv N fixture "=${drv#/nix/store/}" accept
 run_case context-output N fixture "!out!${drv#/nix/store/}" accept
 run_case context-newline N fixture "${opaque}"$'\n'"${at_path}" reject
+run_case context-carriage-return N fixture "${opaque}"$'\r'"${at_path}" reject
 run_case context-recursive-output N fixture "!out!!dev!${drv#/nix/store/}" accept
 run_case context-at N fixture "@${at_path#/nix/store/}" accept
 
@@ -197,7 +195,9 @@ run_case hydrate-revalidation E "${recoverable}" '' accept hydrate
 [ "$(grep -c $'^validity-paths\t/nix/store/66666666666666666666666666666666-recoverable$' "${LAST_LOG}")" -eq 3 ] \
   || fail 'hydrate-revalidation: expected batch, pre-copy, and post-copy validity checks'
 ! grep -Eq $'^nix-call\t(build|develop|run|store realise)' "${LAST_LOG}" \
-  || fail 'hydrate-revalidation: hydration invoked a build or realisation command'
+  || fail 'hydrate-revalidation: hydration invoked a Nix build or realisation command'
+! grep -Eq $'^call\t--realise(\t| )' "${LAST_LOG}" \
+  || fail 'hydrate-revalidation: hydration invoked nix-store --realise'
 run_case context-bad-equals N fixture "=${opaque#/nix/store/}" reject
 run_case context-bad-at N fixture '@/nix/store/44444444444444444444444444444444-at-path' reject
 
