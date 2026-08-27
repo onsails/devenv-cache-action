@@ -15,6 +15,7 @@ requisite='/nix/store/33333333333333333333333333333333-requisite'
 at_path='/nix/store/44444444444444444444444444444444-at-path'
 stale='/nix/store/55555555555555555555555555555555-stale'
 recoverable='/nix/store/66666666666666666666666666666666-recoverable'
+hydrate_set="${recoverable}"
 valid_set="${opaque}:${drv}:${requisite}:${at_path}"
 
 mkdir -p "${work}/bin"
@@ -22,6 +23,13 @@ cat >"${work}/bin/nix-store" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'call\t%s\n' "$*" >>"${MOCK_LOG}"
+if [ "$1" = --check-validity ] && [ "${MOCK_MODE}" = hydrate ] && [ -s "${MOCK_HYDRATE_STATE}" ]; then
+  shift
+  for path in "$@"; do
+    case ":${MOCK_VALID_SET}:/nix/store/66666666666666666666666666666666-recoverable:" in *":${path}:"*) ;; *) exit 1 ;; esac
+  done
+  exit 0
+fi
 if [ "$1" = --check-validity ]; then
   [ "${MOCK_MODE}" != validity-fail ] || exit 1
   shift
@@ -51,6 +59,29 @@ fi
 exit 1
 EOF
 chmod +x "${work}/bin/nix-store"
+cat >"${work}/bin/nix" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = config ] && [ "$2" = show ] && [ "$3" = substituters ]; then
+  [ "${MOCK_MODE}" = hydrate ] || exit 1
+  printf 'substituters = file:///tmp/test-substituter\n'
+  exit 0
+fi
+if [ "$1" = copy ] && [ "$2" = --from ]; then
+  [ "${MOCK_MODE}" = hydrate ] || exit 1
+  from="$3"
+  [ "${from}" = file:///tmp/test-substituter ] || exit 1
+  shift 3
+  for path in "$@"; do
+    [ "$path" = -- ] && continue
+    case ':/nix/store/66666666666666666666666666666666-recoverable:' in *":${path}:"*) ;; *) exit 1 ;; esac
+  done
+  printf 'hydrated\t%s\t%s\n' "${from}" "$*" >>"${MOCK_LOG}"
+  printf 'hydrated\n' >>"${MOCK_HYDRATE_STATE}"
+  exit 0
+fi
+EOF
+chmod +x "${work}/bin/nix"
 missing_nix_store_bin="${work}/bin-without-nix-store"
 mkdir -p "${missing_nix_store_bin}"
 for utility in bash comm cp cut dirname grep mkdir mktemp mv rm sed sha256sum sort tr wc xargs; do
@@ -73,7 +104,9 @@ run_case() {
   live="${case_dir}/live/nix-eval-cache.db"
   output="${case_dir}/output"
   log="${case_dir}/commands"
+  hydrate_state="${case_dir}/hydrated"
   mkdir -p "${staging}/nix-eval-cache-v6" "$(dirname "${live}")" "${home}"
+  : >"${hydrate_state}"
   printf 'live-sentinel' >"${live}"
   : >"${output}"
   : >"${log}"
@@ -105,11 +138,12 @@ run_case() {
   fi
   manifest="${staging}/manifest.json"
 
-  PATH="${tool_path}" HOME="${home}" STAGING_DIR="${staging}" MANIFEST="${manifest}" \
-  LIVE_DB="${live}" SQLITE3_PATH="${sqlite3_path}" EXPECTED_KEY="${key}" \
-  DEVENV_VERSION='test-version' CACHE_EVAL='true' CACHE_NIX_EVAL='true' \
-  GITHUB_OUTPUT="${output}" MOCK_LOG="${log}" MOCK_MODE="${mode}" \
-  MOCK_VALID_SET="${valid_set}" bash "${root}/restore-eval-cache.sh"
+PATH="${tool_path}" HOME="${home}" STAGING_DIR="${staging}" MANIFEST="${manifest}" \
+LIVE_DB="${live}" SQLITE3_PATH="${sqlite3_path}" EXPECTED_KEY="${key}" \
+DEVENV_VERSION='test-version' CACHE_EVAL='true' CACHE_NIX_EVAL='true' \
+GITHUB_OUTPUT="${output}" MOCK_LOG="${log}" MOCK_MODE="${mode}" \
+MOCK_VALID_SET="${valid_set}" MOCK_HYDRATE_STATE="${hydrate_state}" \
+  bash "${root}/restore-eval-cache.sh"
 
   if [ "${expected}" = accept ]; then
     [ "$(${sqlite3_path} "${destination}" 'PRAGMA quick_check;' | tr -d '\n')" = ok ] \
@@ -152,6 +186,13 @@ run_case context-partial N fixture '/nix/store/11111111111111111111111111111111-
 run_case context-unknown N fixture 'plain-token' reject
 run_case context-bad-equals N fixture "=${opaque#/nix/store/}" reject
 run_case context-bad-at N fixture '@/nix/store/44444444444444444444444444444444-at-path' reject
+
+# Hydration recovers a snapshot whose references are missing from the local store but served
+# by a configured substituter; unhydratable references still reject fail closed.
+run_case hydrate-recoverable E "${recoverable}" '' accept hydrate
+run_case hydrate-stale E "${stale}" '' reject hydrate
+run_case nix-hydrate-recoverable N "${recoverable}" '' accept hydrate
+run_case nix-hydrate-stale N "${stale}" '' reject hydrate
 
 # Missing tools and each external-command failure are fail closed.
 run_case absent-nix-store N "${opaque}" '' reject normal "${missing_nix_store_bin}"

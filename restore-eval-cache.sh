@@ -13,6 +13,36 @@ sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
+# A snapshot can outlive the runner's Nix store while every referenced path remains available
+# from a configured binary cache. Hydrate exact store objects only — never realise derivations
+# and never build — then re-check validity; any failure falls back to the fail-closed skip.
+hydrate_store_paths() {
+  local paths="$1"
+  local missing path substituters substituter
+
+  if xargs -n 128 nix-store --check-validity <"${paths}" >/dev/null 2>&1; then return 0; fi
+  command -v nix >/dev/null 2>&1 || return 1
+  substituters="$(nix config show substituters 2>/dev/null)" || return 1
+  substituters="${substituters#substituters = }"
+  [ -n "${substituters}" ] || return 1
+
+  missing="$(mktemp)"
+  while IFS= read -r path; do
+    nix-store --check-validity "${path}" >/dev/null 2>&1 || printf '%s\n' "${path}" >>"${missing}"
+  done <"${paths}"
+  if [ ! -s "${missing}" ]; then rm -f "${missing}"; return 0; fi
+
+  for substituter in ${substituters}; do
+    if xargs -n 16 nix copy --from "${substituter}" -- <"${missing}" >/dev/null 2>&1 \
+      && xargs -n 128 nix-store --check-validity <"${missing}" >/dev/null 2>&1; then
+      rm -f "${missing}"
+      echo "devenv-cache-action: hydrated ${substituter} store paths referenced by the snapshot" >&2
+      return 0
+    fi
+  done
+  rm -f "${missing}"
+  return 1
+}
 # Evaluation outputs can embed absolute store paths and typed Nix string contexts. Validate every
 # staged candidate against the local store before replacing any live database.
 store_references_valid() {
@@ -77,7 +107,7 @@ store_references_valid() {
 
   sort -u -o "${refs}" "${refs}" || { rm -rf "${work}"; return 1; }
   if [ -s "${refs}" ] \
-    && ! xargs -n 128 nix-store --check-validity <"${refs}" >/dev/null 2>&1; then
+    && ! hydrate_store_paths "${refs}"; then
     rm -rf "${work}"; return 1
   fi
   status=0
@@ -88,8 +118,10 @@ store_references_valid() {
       || [ ! -s "${closure}" ] \
       || grep -Eqv "^${store_path_re}$" "${closure}" \
       || ! sort -u "${closure}" >"${closure_sorted}" \
-      || [ -n "$(comm -23 "${drvs}" "${closure_sorted}")" ] \
-      || ! xargs -n 128 nix-store --check-validity <"${closure_sorted}" >/dev/null 2>&1; then
+      || [ -n "$(comm -23 "${drvs}" "${closure_sorted}")" ]; then
+      rm -rf "${work}"; return 1
+    fi
+    if ! hydrate_store_paths "${closure_sorted}"; then
       rm -rf "${work}"; return 1
     fi
   fi
