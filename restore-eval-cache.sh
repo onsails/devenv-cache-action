@@ -22,8 +22,18 @@ hydrate_store_paths() {
 
   if xargs -n 128 nix-store --check-validity <"${paths}" >/dev/null 2>&1; then return 0; fi
   command -v nix >/dev/null 2>&1 || return 1
-  substituters="$(nix config show substituters 2>/dev/null)" || return 1
-  substituters="${substituters#substituters = }"
+  if substituters="$(nix config show substituters 2>/dev/null)"; then
+    :
+  elif substituters="$(nix show-config substituters 2>/dev/null)"; then
+    :
+  else
+    return 1
+  fi
+  case "${substituters}" in
+    *$'\r'*|*$'\n'*) return 1 ;;
+    'substituters = '*) substituters="${substituters#substituters = }" ;;
+    *' = '*) return 1 ;;
+  esac
   [ -n "${substituters}" ] || return 1
 
   hydrated_count=0
@@ -69,8 +79,11 @@ store_references_valid() {
     fi
     : >"${contexts}"
   elif [ "${kind}" = N ]; then
-    if ! "${SQLITE3_PATH}" "${snapshot}" \
-      'SELECT value FROM Attributes WHERE value IS NOT NULL;' >"${text}" 2>/dev/null \
+    if [ "$("${SQLITE3_PATH}" "${snapshot}" \
+      'SELECT COUNT(*) FROM Attributes WHERE context IS NOT NULL AND (instr(context, char(10)) > 0 OR instr(context, char(13)) > 0);' \
+      2>/dev/null)" != 0 ] \
+      || ! "${SQLITE3_PATH}" "${snapshot}" \
+        'SELECT value FROM Attributes WHERE value IS NOT NULL;' >"${text}" 2>/dev/null \
       || ! "${SQLITE3_PATH}" "${snapshot}" \
         'SELECT context FROM Attributes WHERE context IS NOT NULL;' >"${contexts}" 2>/dev/null; then
       rm -rf "${work}"; return 1

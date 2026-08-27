@@ -23,19 +23,13 @@ cat >"${work}/bin/nix-store" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'call\t%s\n' "$*" >>"${MOCK_LOG}"
-if [ "$1" = --check-validity ] && [ "${MOCK_MODE}" = hydrate ] && [ -s "${MOCK_HYDRATE_STATE}" ]; then
-  shift
-  for path in "$@"; do
-    case ":${MOCK_VALID_SET}:/nix/store/66666666666666666666666666666666-recoverable:" in *":${path}:"*) ;; *) exit 1 ;; esac
-  done
-  exit 0
-fi
 if [ "$1" = --check-validity ]; then
   [ "${MOCK_MODE}" != validity-fail ] || exit 1
   shift
   printf 'validity-paths\t%s\n' "$*" >>"${MOCK_LOG}"
   for path in "$@"; do
-    case ":${MOCK_VALID_SET}:" in *":${path}:"*) ;; *) exit 1 ;; esac
+    case ":${MOCK_VALID_SET}:" in *":${path}:"*) continue ;; esac
+    grep -qxF "${path}" "${MOCK_HYDRATE_STATE}" 2>/dev/null || exit 1
   done
   exit 0
 fi
@@ -62,24 +56,31 @@ chmod +x "${work}/bin/nix-store"
 cat >"${work}/bin/nix" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf 'nix-call\t%s\n' "$*" >>"${MOCK_LOG}"
 if [ "$1" = config ] && [ "$2" = show ] && [ "$3" = substituters ]; then
-  [ "${MOCK_MODE}" = hydrate ] || exit 1
+  [ "${MOCK_MODE}" != hydrate-legacy ] || exit 1
+  case "${MOCK_MODE}" in hydrate|hydrate-validity-fail) printf 'file:///tmp/test-substituter\n'; exit 0 ;; esac
+  exit 1
+fi
+if [ "$1" = show-config ] && [ "$2" = substituters ]; then
+  [ "${MOCK_MODE}" = hydrate-legacy ] || exit 1
   printf 'substituters = file:///tmp/test-substituter\n'
   exit 0
 fi
 if [ "$1" = copy ] && [ "$2" = --from ]; then
-  [ "${MOCK_MODE}" = hydrate ] || exit 1
+  case "${MOCK_MODE}" in hydrate|hydrate-legacy|hydrate-validity-fail) ;; *) exit 1 ;; esac
   from="$3"
   [ "${from}" = file:///tmp/test-substituter ] || exit 1
   shift 3
   for path in "$@"; do
     [ "$path" = -- ] && continue
-    case ':/nix/store/66666666666666666666666666666666-recoverable:' in *":${path}:"*) ;; *) exit 1 ;; esac
+    [ "$path" = '/nix/store/66666666666666666666666666666666-recoverable' ] || exit 1
+    printf 'hydrated\t%s\t%s\n' "${from}" "${path}" >>"${MOCK_LOG}"
+    [ "${MOCK_MODE}" = hydrate-validity-fail ] || printf '%s\n' "${path}" >>"${MOCK_HYDRATE_STATE}"
   done
-  printf 'hydrated\t%s\t%s\n' "${from}" "$*" >>"${MOCK_LOG}"
-  printf 'hydrated\n' >>"${MOCK_HYDRATE_STATE}"
   exit 0
 fi
+exit 1
 EOF
 chmod +x "${work}/bin/nix"
 missing_nix_store_bin="${work}/bin-without-nix-store"
@@ -177,6 +178,7 @@ run_case nix-recoverable N "${recoverable}" '' reject
 run_case context-opaque N fixture "${opaque}" accept
 run_case context-drv N fixture "=${drv#/nix/store/}" accept
 run_case context-output N fixture "!out!${drv#/nix/store/}" accept
+run_case context-newline N fixture "${opaque}"$'\n'"${at_path}" reject
 run_case context-recursive-output N fixture "!out!!dev!${drv#/nix/store/}" accept
 run_case context-at N fixture "@${at_path#/nix/store/}" accept
 
@@ -184,6 +186,18 @@ run_case context-at N fixture "@${at_path#/nix/store/}" accept
 run_case context-malformed N fixture '!out!' reject
 run_case context-partial N fixture '/nix/store/11111111111111111111111111111111-opaque/trailing' reject
 run_case context-unknown N fixture 'plain-token' reject
+run_case hydrate-legacy-cli E "${recoverable}" '' accept hydrate-legacy
+run_case hydrate-validity-failure E "${recoverable}" '' reject hydrate-validity-fail
+run_case nix-hydrate-validity-failure N "${recoverable}" '' reject hydrate-validity-fail
+
+# Every accepted hydration copies the exact path, then re-checks that path before installing.
+run_case hydrate-revalidation E "${recoverable}" '' accept hydrate
+[ "$(grep -c $'^hydrated\tfile:///tmp/test-substituter\t/nix/store/66666666666666666666666666666666-recoverable$' "${LAST_LOG}")" -eq 1 ] \
+  || fail 'hydrate-revalidation: expected one exact-path copy'
+[ "$(grep -c $'^validity-paths\t/nix/store/66666666666666666666666666666666-recoverable$' "${LAST_LOG}")" -eq 3 ] \
+  || fail 'hydrate-revalidation: expected batch, pre-copy, and post-copy validity checks'
+! grep -Eq $'^nix-call\t(build|develop|run|store realise)' "${LAST_LOG}" \
+  || fail 'hydrate-revalidation: hydration invoked a build or realisation command'
 run_case context-bad-equals N fixture "=${opaque#/nix/store/}" reject
 run_case context-bad-at N fixture '@/nix/store/44444444444444444444444444444444-at-path' reject
 
