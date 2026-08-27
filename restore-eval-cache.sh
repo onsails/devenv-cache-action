@@ -18,7 +18,7 @@ sha256_file() {
 # and never build — then re-check validity; any failure falls back to the fail-closed skip.
 hydrate_store_paths() {
   local paths="$1"
-  local missing path substituters substituter
+  local path substituters substituter hydrated hydrated_count
 
   if xargs -n 128 nix-store --check-validity <"${paths}" >/dev/null 2>&1; then return 0; fi
   command -v nix >/dev/null 2>&1 || return 1
@@ -26,22 +26,24 @@ hydrate_store_paths() {
   substituters="${substituters#substituters = }"
   [ -n "${substituters}" ] || return 1
 
-  missing="$(mktemp)"
+  hydrated_count=0
   while IFS= read -r path; do
-    nix-store --check-validity "${path}" >/dev/null 2>&1 || printf '%s\n' "${path}" >>"${missing}"
-  done <"${paths}"
-  if [ ! -s "${missing}" ]; then rm -f "${missing}"; return 0; fi
-
-  for substituter in ${substituters}; do
-    if xargs -n 16 nix copy --from "${substituter}" -- <"${missing}" >/dev/null 2>&1 \
-      && xargs -n 128 nix-store --check-validity <"${missing}" >/dev/null 2>&1; then
-      rm -f "${missing}"
-      echo "devenv-cache-action: hydrated ${substituter} store paths referenced by the snapshot" >&2
-      return 0
+    if nix-store --check-validity "${path}" >/dev/null 2>&1; then continue; fi
+    hydrated=false
+    for substituter in ${substituters}; do
+      if nix copy --from "${substituter}" -- "${path}" >/dev/null 2>&1 \
+        && nix-store --check-validity "${path}" >/dev/null 2>&1; then
+        hydrated=true
+        hydrated_count=$((hydrated_count + 1))
+        break
+      fi
+    done
+    if [ "${hydrated}" != true ]; then
+      echo "devenv-cache-action: snapshot store path is unavailable from configured substituters: ${path}" >&2
+      return 1
     fi
-  done
-  rm -f "${missing}"
-  return 1
+  done <"${paths}"
+  echo "devenv-cache-action: hydrated ${hydrated_count} store paths referenced by the snapshot" >&2
 }
 # Evaluation outputs can embed absolute store paths and typed Nix string contexts. Validate every
 # staged candidate against the local store before replacing any live database.
